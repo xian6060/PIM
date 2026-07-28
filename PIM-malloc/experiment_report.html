@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PIM-malloc 實驗報告：Alien Cache 與跨 tasklet free 優化</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: rgba(15, 23, 42, 0.78);
+      --panel-2: rgba(30, 41, 59, 0.72);
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-2: #22c55e;
+      --accent-3: #f59e0b;
+      --danger: #fb7185;
+      --grid: rgba(148, 163, 184, 0.16);
+      --shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background:
+      radial-gradient(circle at top left, rgba(56, 189, 248, 0.14), transparent 28%),
+      radial-gradient(circle at top right, rgba(34, 197, 94, 0.10), transparent 24%),
+      linear-gradient(180deg, #050816 0%, #0b1020 100%);
+      color: var(--text); font-family: "Segoe UI", "Noto Sans TC", sans-serif; }
+
+    .wrap { max-width: 1180px; margin: 0 auto; padding: 32px 20px 40px; }
+    .hero {
+      display: grid; gap: 18px; grid-template-columns: 1.3fr 0.9fr;
+      align-items: stretch; margin-bottom: 22px;
+    }
+    .title-card, .summary-card, .panel {
+      background: linear-gradient(180deg, rgba(15, 23, 42, 0.88), rgba(15, 23, 42, 0.66));
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      box-shadow: var(--shadow);
+      border-radius: 22px;
+      backdrop-filter: blur(10px);
+    }
+    .title-card { padding: 28px; position: relative; overflow: hidden; }
+    .title-card::after {
+      content: ""; position: absolute; inset: auto -80px -80px auto; width: 240px; height: 240px;
+      background: radial-gradient(circle, rgba(56, 189, 248, 0.23), transparent 66%);
+      pointer-events: none;
+    }
+    .eyebrow { color: var(--accent); letter-spacing: .14em; text-transform: uppercase; font-size: 12px; font-weight: 700; }
+    h1 { margin: 10px 0 12px; font-size: clamp(28px, 4vw, 46px); line-height: 1.08; }
+    .lead { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.8; max-width: 62ch; }
+
+    .summary-card { padding: 22px; display: grid; gap: 14px; }
+    .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .metric {
+      background: rgba(2, 6, 23, 0.38); border: 1px solid rgba(148, 163, 184, 0.12);
+      border-radius: 16px; padding: 14px 14px 12px;
+    }
+    .metric .label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+    .metric .value { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
+    .metric .unit { font-size: 12px; color: var(--muted); margin-left: 4px; }
+    .metric .sub { margin-top: 8px; color: var(--muted); font-size: 12px; }
+
+    .section-grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 18px; margin-top: 18px; }
+    .panel { padding: 22px; }
+    .panel h2 { margin: 0 0 12px; font-size: 20px; }
+    .panel p, .panel li { color: var(--muted); line-height: 1.75; }
+    .panel ul { margin: 10px 0 0 18px; padding: 0; }
+
+    .tag-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+    .tag { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .tag.blue { background: rgba(56, 189, 248, 0.12); color: #7dd3fc; }
+    .tag.green { background: rgba(34, 197, 94, 0.12); color: #86efac; }
+    .tag.amber { background: rgba(245, 158, 11, 0.12); color: #fcd34d; }
+
+    .chart-card { margin-top: 18px; }
+    .chart-wrap { display: grid; grid-template-columns: 1fr; gap: 18px; }
+    .chart { width: 100%; height: 320px; display: block; }
+    .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; color: var(--muted); font-size: 13px; }
+    .legend span { display: inline-flex; align-items: center; gap: 8px; }
+    .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+    .dot.baseline { background: #60a5fa; }
+    .dot.alien { background: #22c55e; }
+    .dot.instrumented { background: #f59e0b; }
+
+    .timeline { display: grid; gap: 14px; }
+    .step { display: grid; grid-template-columns: 52px 1fr; gap: 14px; padding: 14px; background: rgba(2, 6, 23, 0.34); border: 1px solid rgba(148, 163, 184, 0.12); border-radius: 16px; }
+    .num {
+      width: 52px; height: 52px; border-radius: 14px; display: grid; place-items: center;
+      background: linear-gradient(180deg, rgba(56, 189, 248, 0.22), rgba(34, 197, 94, 0.18));
+      color: #e0f2fe; font-weight: 800; font-size: 18px;
+    }
+    .step h3 { margin: 2px 0 6px; font-size: 16px; }
+    .step p { margin: 0; }
+
+    .callout {
+      margin-top: 18px; padding: 16px 18px; border-radius: 18px;
+      background: linear-gradient(90deg, rgba(56, 189, 248, 0.14), rgba(34, 197, 94, 0.10));
+      border: 1px solid rgba(125, 211, 252, 0.18);
+      color: #dbeafe;
+    }
+
+    .footnote { margin-top: 18px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+    .small { font-size: 12px; color: var(--muted); }
+
+    .fade-in { animation: fadeIn 0.8s ease both; }
+    .delay-1 { animation-delay: .06s; }
+    .delay-2 { animation-delay: .12s; }
+    .delay-3 { animation-delay: .18s; }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (max-width: 980px) {
+      .hero, .section-grid { grid-template-columns: 1fr; }
+      .metric-grid { grid-template-columns: 1fr; }
+      .chart { height: 340px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <article class="title-card fade-in">
+        <div class="eyebrow">Experiment Report</div>
+        <h1>PIM-malloc Alien Cache 實驗報告</h1>
+        <p class="lead">
+          本報告比較傳統跨 tasklet free 與加入 alien cache 之後的行為，並納入 DPU 端計數器觀察，
+          用來說明 batching 對鎖競爭與掃描成本的影響。
+        </p>
+        <div class="tag-row">
+          <span class="tag blue">UPMEM simulator</span>
+          <span class="tag green">alien cache batching</span>
+          <span class="tag amber">device counters enabled</span>
+        </div>
+      </article>
+
+      <aside class="summary-card fade-in delay-1">
+        <div class="metric-grid">
+          <div class="metric">
+            <span class="label">Baseline</span>
+            <div class="value" data-value="19388">19,388<span class="unit">us</span></div>
+            <div class="sub">未啟用 alien cache</div>
+          </div>
+          <div class="metric">
+            <span class="label">Alien cache</span>
+            <div class="value" data-value="18988">18,988<span class="unit">us</span></div>
+            <div class="sub">啟用 batching 後</div>
+          </div>
+          <div class="metric">
+            <span class="label">Instrumented run</span>
+            <div class="value" data-value="22935">22,935<span class="unit">us</span></div>
+            <div class="sub">含 device counters</div>
+          </div>
+        </div>
+        <div class="small">相對 baseline 的改善：約 <strong>2.06%</strong>（以 19,388 us 與 18,988 us 計算）。</div>
+      </aside>
+    </section>
+
+    <section class="section-grid">
+      <article class="panel fade-in delay-2">
+        <h2>研究動機</h2>
+        <p>
+          原本的跨 tasklet free 需要在多個 thread cache 中做掃描，還可能伴隨全域鎖競爭。
+          當 free 次數增加時，這些成本會直接放大，形成明顯瓶頸。
+        </p>
+        <p>
+          這次修改加入 per-tasklet 的 alien cache，將 foreign free 先暫存起來，再批次 flush，
+          目標是把每次 free 的同步成本轉移成較少次數的集中處理。
+        </p>
+        <ul>
+          <li>降低跨 tasklet free 的即時鎖競爭。</li>
+          <li>減少每次 free 都要掃描整組 cache 的次數。</li>
+          <li>用 DPU 端 counter 補足只看總時間時看不到的行為資訊。</li>
+        </ul>
+      </article>
+
+      <article class="panel fade-in delay-3">
+        <h2>實驗方法</h2>
+        <div class="timeline">
+          <div class="step">
+            <div class="num">1</div>
+            <div>
+              <h3>配置測試環境</h3>
+              <p>使用 UPMEM simulator 執行 Host / Device 程式，避免硬體依賴干擾比較。</p>
+            </div>
+          </div>
+          <div class="step">
+            <div class="num">2</div>
+            <div>
+              <h3>測量 cross-tasklet free</h3>
+              <p>讓 tasklet free 其他 tasklet 的指標，以模擬最容易出現 contention 的情境。</p>
+            </div>
+          </div>
+          <div class="step">
+            <div class="num">3</div>
+            <div>
+              <h3>加入 alien cache 與 flush</h3>
+              <p>foreign free 先進入本 tasklet 的 alien cache，累積到門檻後再批次 flush。</p>
+            </div>
+          </div>
+          <div class="step">
+            <div class="num">4</div>
+            <div>
+              <h3>讀回 DPU counters</h3>
+              <p>記錄 enqueued frees、flushed pointers 與 flush cycles，補足效能觀察的細節。</p>
+            </div>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section class="panel chart-card fade-in delay-3">
+      <h2>結果比較</h2>
+      <div class="chart-wrap">
+        <svg class="chart" viewBox="0 0 1120 320" role="img" aria-label="Performance comparison chart"></svg>
+        <div class="legend">
+          <span><i class="dot baseline"></i> Baseline 19,388 us</span>
+          <span><i class="dot alien"></i> Alien cache 18,988 us</span>
+          <span><i class="dot instrumented"></i> Instrumented 22,935 us</span>
+        </div>
+      </div>
+      <div class="callout">
+        本次量測顯示 alien cache 版本比 baseline 略快，幅度約 2%；而加入 device counters 後，
+        總時間上升，合理推測是計數與 perfcounter 量測本身帶來額外開銷，因此 instrumented run 不應直接與前兩次做絕對速度比較。
+      </div>
+    </section>
+
+    <section class="section-grid">
+      <article class="panel fade-in delay-2">
+        <h2>DPU counters 觀察</h2>
+        <ul>
+          <li><strong>device_enqueued_frees = 15</strong>：表示 15 次 foreign free 先進入 alien cache。</li>
+          <li><strong>device_flushed_pointers = 16</strong>：flush 時實際處理了 16 個 pointer，顯示最後由門檻觸發一次完整 flush。</li>
+          <li><strong>device_flush_cycles = 27136</strong>：flush 階段累計週期數，可用來觀察批次回收成本。</li>
+        </ul>
+        <p>
+          這些 counters 的價值不在於替代總時間，而是在於把「時間花在 enqueue 還是 flush」拆開，
+          讓後續優化能更精準地指向真正昂貴的路徑。
+        </p>
+      </article>
+
+      <article class="panel fade-in delay-3">
+        <h2>結論</h2>
+        <p>
+          alien cache 的核心效果是把高頻、分散的 free 同步成本，改成較低頻、集中式的 flush。
+          在目前 microbenchmark 下，這樣的 batching 已能看到小幅收益。
+        </p>
+        <p>
+          後續如果要再往下優化，可考慮加入 size-class / owner metadata，避免 flush 時還要對所有 thread cache 做完整掃描。
+        </p>
+      </article>
+    </section>
+
+    <div class="footnote">
+      量測來源：`hw/build/Tests/MicrobenchmarkTest/Host/Microbenchmark_test_host` 的 simulator 執行結果。
+      報告中的 baseline 與 alien cache 比較值來自先前量測，instrumented run 則是加入 device counters 後的最新執行結果。
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const svg = document.querySelector('.chart');
+      const data = [
+        { label: 'Baseline', value: 19388, color: '#60a5fa' },
+        { label: 'Alien cache', value: 18988, color: '#22c55e' },
+        { label: 'Instrumented', value: 22935, color: '#f59e0b' },
+      ];
+
+      const width = 1120;
+      const height = 320;
+      const pad = { top: 20, right: 28, bottom: 54, left: 86 };
+      const chartW = width - pad.left - pad.right;
+      const chartH = height - pad.top - pad.bottom;
+      const max = Math.max(...data.map(d => d.value)) * 1.12;
+
+      const svgNS = 'http://www.w3.org/2000/svg';
+      const make = (name, attrs = {}) => {
+        const el = document.createElementNS(svgNS, name);
+        for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+        return el;
+      };
+
+      const defs = make('defs');
+      svg.appendChild(defs);
+
+      const gridLines = 4;
+      for (let i = 0; i <= gridLines; i++) {
+        const y = pad.top + (chartH / gridLines) * i;
+        const line = make('line', { x1: pad.left, y1: y, x2: width - pad.right, y2: y, stroke: 'rgba(148,163,184,0.18)', 'stroke-width': 1 });
+        svg.appendChild(line);
+        const tick = Math.round(max - (max / gridLines) * i);
+        const text = make('text', { x: 16, y: y + 4, fill: '#94a3b8', 'font-size': 12, 'font-family': 'Segoe UI, sans-serif' });
+        text.textContent = tick.toLocaleString() + ' us';
+        svg.appendChild(text);
+      }
+
+      const barGap = 38;
+      const barW = (chartW - barGap * (data.length - 1)) / data.length;
+
+      data.forEach((d, i) => {
+        const x = pad.left + i * (barW + barGap);
+        const h = Math.max(8, (d.value / max) * chartH);
+        const y = pad.top + chartH - h;
+
+        const gradId = `grad-${i}`;
+        const grad = make('linearGradient', { id: gradId, x1: '0%', y1: '0%', x2: '0%', y2: '100%' });
+        grad.appendChild(make('stop', { offset: '0%', 'stop-color': d.color, 'stop-opacity': 0.95 }));
+        grad.appendChild(make('stop', { offset: '100%', 'stop-color': d.color, 'stop-opacity': 0.55 }));
+        defs.appendChild(grad);
+
+        const bar = make('rect', {
+          x, y, width: barW, height: h, rx: 18, fill: `url(#${gradId})`,
+          stroke: d.color, 'stroke-opacity': 0.35, 'stroke-width': 1.5
+        });
+        svg.appendChild(bar);
+
+        const value = make('text', {
+          x: x + barW / 2, y: y - 12, fill: '#e2e8f0', 'font-size': 16,
+          'font-weight': 700, 'text-anchor': 'middle', 'font-family': 'Segoe UI, sans-serif'
+        });
+        value.textContent = d.value.toLocaleString() + ' us';
+        svg.appendChild(value);
+
+        const label = make('text', {
+          x: x + barW / 2, y: height - 18, fill: '#cbd5e1', 'font-size': 14,
+          'font-weight': 600, 'text-anchor': 'middle', 'font-family': 'Segoe UI, sans-serif'
+        });
+        label.textContent = d.label;
+        svg.appendChild(label);
+      });
+    })();
+  </script>
+</body>
+</html>
