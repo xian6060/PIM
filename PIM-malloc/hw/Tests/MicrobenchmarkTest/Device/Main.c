@@ -17,6 +17,7 @@
 __host int mallocableRegionSize;
 __host int pageSize;
 __host int bufferSize;
+__host int alienCacheFlushThreshold;
 
 struct UMalloc *uMalloc;
 __mram_ptr void *sharedPointers[NR_TASKLETS];
@@ -40,7 +41,8 @@ int main() {
 
     uMalloc =
         initUMalloc(mallocableRegionSize, pageSize, bufferSize,
-                    DPU_MRAM_HEAP_POINTER, &sizeClasses, sizeClassesLength);
+            DPU_MRAM_HEAP_POINTER, &sizeClasses, sizeClassesLength,
+            alienCacheFlushThreshold);
   }
   barrier_wait(&deviceBarrier);
 

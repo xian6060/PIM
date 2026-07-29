@@ -59,7 +59,8 @@ struct UMalloc {
 
 struct UMalloc *initUMalloc(int mallocableRegionSize, int pageSize,
                             int bufferSize, __mram_ptr void *mramBase,
-                            int *sizeClasses, int sizeClassesLength);
+                            int *sizeClasses, int sizeClassesLength,
+                            int alienFlushThreshold);
 void finiUMalloc(struct UMalloc *uMalloc);
 
 __mram_ptr void *allocateUMalloc(struct UMalloc *uMalloc, int size);

@@ -46,16 +46,29 @@ static struct AlienCache *getAlienCache(struct UMalloc *uMalloc, int threadId) {
   }
 }
 
-static void initAlienCache(struct AlienCache *alienCache) {
+static int clampAlienFlushThreshold(int alienFlushThreshold) {
+  if (alienFlushThreshold < 1) {
+    return 1;
+  }
+
+  if (alienFlushThreshold > ALIEN_CACHE_SIZE) {
+    return ALIEN_CACHE_SIZE;
+  }
+
+  return alienFlushThreshold;
+}
+
+static void initAlienCache(struct AlienCache *alienCache,
+                           int flushThreshold) {
   alienCache->count = 0;
-  alienCache->flushThreshold = ALIEN_CACHE_SIZE;
+  alienCache->flushThreshold = clampAlienFlushThreshold(flushThreshold);
 
   for (int i = 0; i < ALIEN_CACHE_SIZE; i++) {
     alienCache->entries[i] = NULL;
   }
 }
 
-static void initAlienCaches(struct UMalloc *uMalloc) {
+static void initAlienCaches(struct UMalloc *uMalloc, int flushThreshold) {
   uMalloc->alienCache0 = mem_alloc(sizeof(struct AlienCache));
   uMalloc->alienCache1 = mem_alloc(sizeof(struct AlienCache));
   uMalloc->alienCache2 = mem_alloc(sizeof(struct AlienCache));
@@ -73,22 +86,22 @@ static void initAlienCaches(struct UMalloc *uMalloc) {
   uMalloc->alienCache14 = mem_alloc(sizeof(struct AlienCache));
   uMalloc->alienCache15 = mem_alloc(sizeof(struct AlienCache));
 
-  initAlienCache(uMalloc->alienCache0);
-  initAlienCache(uMalloc->alienCache1);
-  initAlienCache(uMalloc->alienCache2);
-  initAlienCache(uMalloc->alienCache3);
-  initAlienCache(uMalloc->alienCache4);
-  initAlienCache(uMalloc->alienCache5);
-  initAlienCache(uMalloc->alienCache6);
-  initAlienCache(uMalloc->alienCache7);
-  initAlienCache(uMalloc->alienCache8);
-  initAlienCache(uMalloc->alienCache9);
-  initAlienCache(uMalloc->alienCache10);
-  initAlienCache(uMalloc->alienCache11);
-  initAlienCache(uMalloc->alienCache12);
-  initAlienCache(uMalloc->alienCache13);
-  initAlienCache(uMalloc->alienCache14);
-  initAlienCache(uMalloc->alienCache15);
+  initAlienCache(uMalloc->alienCache0, flushThreshold);
+  initAlienCache(uMalloc->alienCache1, flushThreshold);
+  initAlienCache(uMalloc->alienCache2, flushThreshold);
+  initAlienCache(uMalloc->alienCache3, flushThreshold);
+  initAlienCache(uMalloc->alienCache4, flushThreshold);
+  initAlienCache(uMalloc->alienCache5, flushThreshold);
+  initAlienCache(uMalloc->alienCache6, flushThreshold);
+  initAlienCache(uMalloc->alienCache7, flushThreshold);
+  initAlienCache(uMalloc->alienCache8, flushThreshold);
+  initAlienCache(uMalloc->alienCache9, flushThreshold);
+  initAlienCache(uMalloc->alienCache10, flushThreshold);
+  initAlienCache(uMalloc->alienCache11, flushThreshold);
+  initAlienCache(uMalloc->alienCache12, flushThreshold);
+  initAlienCache(uMalloc->alienCache13, flushThreshold);
+  initAlienCache(uMalloc->alienCache14, flushThreshold);
+  initAlienCache(uMalloc->alienCache15, flushThreshold);
 }
 
 static struct ThreadCache **getThreadCachesByThreadId(struct UMalloc *uMalloc,
@@ -199,7 +212,8 @@ void flushAllAlienCaches(struct UMalloc *uMalloc) {
 
 struct UMalloc *initUMalloc(int mallocableRegionSize, int pageSize,
                             int bufferSize, __mram_ptr void *mramBase,
-                            int *sizeClasses, int sizeClassesLength) {
+                            int *sizeClasses, int sizeClassesLength,
+                            int alienFlushThreshold) {
   assert(isPowOf2(pageSize));
   assert(sizeClassesLength > 0);
 
@@ -251,7 +265,7 @@ struct UMalloc *initUMalloc(int mallocableRegionSize, int pageSize,
   uMalloc->threadCaches15 =
       mem_alloc(sizeClassesLength * sizeof(struct ThreadCache *));
 
-  initAlienCaches(uMalloc);
+  initAlienCaches(uMalloc, alienFlushThreshold);
 
   for (int i = 0; i < sizeClassesLength; i++) {
     uMalloc->threadCaches0[i] =
