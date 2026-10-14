@@ -63,4 +63,7 @@ int getThreadCacheChunkIndex(struct ThreadCache* threadCache,
                              __mram_ptr struct ThreadCacheNode* node,
                              __mram_ptr void* pointer);
 
+int countThreadCachePages(struct ThreadCache* threadCache);
+int countThreadCacheAllocatedChunks(struct ThreadCache* threadCache);
+
 #endif

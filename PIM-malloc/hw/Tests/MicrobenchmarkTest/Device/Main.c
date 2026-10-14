@@ -1,72 +1,175 @@
 #include <alloc.h>
 #include <assert.h>
 #include <barrier.h>
-#include <buddy_alloc.h>
 #include <defs.h>
 #include <mram.h>
 #include <perfcounter.h>
+#include <stdint.h>
 #include <stdio.h>
 
-#include "Common/Device/Timer.h"
 #include "Microbenchmark/Device/uMalloc.h"
+#include "MicrobenchmarkTest/BenchmarkResult.h"
 
 #ifndef NR_TASKLETS
 #define NR_TASKLETS 16
 #endif
 
+#define MAX_BATCH_SIZE 128
+
+// NOTE: inputs written by the host before every launch
 __host int mallocableRegionSize;
 __host int pageSize;
 __host int bufferSize;
 __host int alienCacheFlushThreshold;
+__host int allocSize;
+__host int batchSize;
+__host int numRounds;
+__host int localFreePercent;
+__host int validate;
+
+__host struct BenchmarkResult result;
 
 struct UMalloc *uMalloc;
-__mram_ptr void *sharedPointers[NR_TASKLETS];
-
-// Performance counters
-__host uint64_t totalCycles = 0;
-__host int32_t crossThreadFrees = 0;
-__host int32_t alienCacheFlushes = 0;
+__mram_ptr void *sharedPointers[NR_TASKLETS][MAX_BATCH_SIZE];
+uint32_t validationErrors[NR_TASKLETS];
 
 BARRIER_INIT(deviceBarrier, NR_TASKLETS);
+
+static uint64_t makeTag(int threadId, int round, int index) {
+  return ((uint64_t)0xA11C << 48) | ((uint64_t)threadId << 32) |
+         ((uint64_t)round << 16) | (uint64_t)index;
+}
+
+static void collectResult(uint64_t allocCycles, uint64_t freeCycles,
+                          uint64_t drainCycles) {
+  result.allocCycles = allocCycles;
+  result.freeCycles = freeCycles;
+  result.drainCycles = drainCycles;
+  result.totalCycles = allocCycles + freeCycles + drainCycles;
+
+  result.localFrees = 0;
+  result.alienEnqueues = 0;
+  result.alienFlushes = 0;
+  result.flushedPointers = 0;
+  result.ownerLockAcquires = 0;
+  result.cacheSearches = 0;
+  result.buddyFrees = 0;
+  result.validationErrors = 0;
+
+  for (int threadId = 0; threadId < NR_TASKLETS; threadId++) {
+    struct UMallocStats *stats = &uMalloc->stats[threadId];
+
+    result.localFrees += stats->localFrees;
+    result.alienEnqueues += stats->alienEnqueues;
+    result.alienFlushes += stats->alienFlushes;
+    result.flushedPointers += stats->flushedPointers;
+    result.ownerLockAcquires += stats->ownerLockAcquires;
+    result.cacheSearches += stats->cacheSearches;
+    result.buddyFrees += stats->buddyFrees;
+    result.validationErrors += validationErrors[threadId];
+  }
+
+  int numPages;
+  int numAllocatedChunks;
+  getUMallocUsage(uMalloc, &numPages, &numAllocatedChunks);
+
+  result.numPages = numPages;
+  result.leakedChunks = numAllocatedChunks;
+}
 
 int main() {
   int threadId = me();
 
   if (threadId == 0) {
     mem_reset();
-    perfcounter_config(COUNT_CYCLES, true);
+
+    assert(0 < batchSize && batchSize <= MAX_BATCH_SIZE);
+    assert(0 <= localFreePercent && localFreePercent <= 100);
+    assert(allocSize >= 8);
 
     int sizeClasses[8] = {16, 32, 64, 128, 256, 512, 1024, 2048};
     int sizeClassesLength = 8;
 
-    uMalloc =
-        initUMalloc(mallocableRegionSize, pageSize, bufferSize,
-            DPU_MRAM_HEAP_POINTER, &sizeClasses, sizeClassesLength,
-            alienCacheFlushThreshold);
+    uMalloc = initUMalloc(mallocableRegionSize, pageSize, bufferSize,
+                          DPU_MRAM_HEAP_POINTER, sizeClasses,
+                          sizeClassesLength, alienCacheFlushThreshold);
+
+    perfcounter_config(COUNT_CYCLES, true);
   }
+  validationErrors[threadId] = 0;
   barrier_wait(&deviceBarrier);
 
-  struct Timer timer = {0, 0};
-
-  startTimer(&timer);
-
-  sharedPointers[threadId] = allocateUMalloc(uMalloc, 32);
-  barrier_wait(&deviceBarrier);
-
+  // NOTE: the first numLocalFrees pointers of every batch are freed by their
+  // owner, the rest by the previous tasklet, so each pointer is freed once
+  int numLocalFrees = batchSize * localFreePercent / 100;
   int victimThreadId = (threadId + 1) % NR_TASKLETS;
-  freeUMalloc(uMalloc, sharedPointers[victimThreadId]);
-  barrier_wait(&deviceBarrier);
 
-  if (threadId == 0) {
-    flushAllAlienCaches(uMalloc);
+  perfcounter_t phaseStart = 0;
+  uint64_t allocCycles = 0;
+  uint64_t freeCycles = 0;
+
+  for (int round = 0; round < numRounds; round++) {
+    if (threadId == 0) {
+      phaseStart = perfcounter_get();
+    }
+
+    for (int i = 0; i < batchSize; i++) {
+      __mram_ptr void *pointer = allocateUMalloc(uMalloc, allocSize);
+      sharedPointers[threadId][i] = pointer;
+
+      if (validate) {
+        uint64_t tag __dma_aligned = makeTag(threadId, round, i);
+        mram_write(&tag, pointer, sizeof(tag));
+      }
+    }
+    barrier_wait(&deviceBarrier);
+
+    if (threadId == 0) {
+      allocCycles += perfcounter_get() - phaseStart;
+    }
+
+    // NOTE: overlapping allocations show up as overwritten tags
+    if (validate) {
+      for (int i = 0; i < batchSize; i++) {
+        uint64_t tag __dma_aligned;
+        mram_read(sharedPointers[threadId][i], &tag, sizeof(tag));
+
+        if (tag != makeTag(threadId, round, i)) {
+          validationErrors[threadId]++;
+        }
+      }
+      barrier_wait(&deviceBarrier);
+    }
+
+    if (threadId == 0) {
+      phaseStart = perfcounter_get();
+    }
+
+    for (int i = 0; i < batchSize; i++) {
+      if (i < numLocalFrees) {
+        freeUMalloc(uMalloc, sharedPointers[threadId][i]);
+      } else {
+        freeUMalloc(uMalloc, sharedPointers[victimThreadId][i]);
+      }
+    }
+    barrier_wait(&deviceBarrier);
+
+    if (threadId == 0) {
+      freeCycles += perfcounter_get() - phaseStart;
+    }
   }
+
+  if (threadId == 0) {
+    phaseStart = perfcounter_get();
+  }
+
+  flushCurrentThreadAlienCache(uMalloc);
   barrier_wait(&deviceBarrier);
 
-  stopTimer(&timer);
-  // Tasklet 0 prints device-side timing statistics
   if (threadId == 0) {
-    printf("[DPU] Timer cycles: %lu\n", getTime(&timer));
-    // Optionally add more counters here if tracked
+    uint64_t drainCycles = perfcounter_get() - phaseStart;
+
+    collectResult(allocCycles, freeCycles, drainCycles);
   }
 
   return 0;

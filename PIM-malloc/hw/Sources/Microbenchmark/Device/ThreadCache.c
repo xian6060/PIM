@@ -29,7 +29,7 @@ void finiThreadCache(struct ThreadCache *threadCache) {
   __mram_ptr struct ThreadCacheNode *node = threadCache->root;
 
   while (node != NULL) {
-    struct ThreadCacheNode *neighbors[2];
+    struct ThreadCacheNode *neighbors[2] __dma_aligned;
 
     mram_read((__mram_ptr void *)node, (void *)neighbors,
               2 * sizeof(__mram_ptr struct ThreadCacheNode *));
@@ -54,7 +54,7 @@ __mram_ptr void *allocateThreadCache(struct ThreadCache *threadCache) {
       return pointer;
     }
 
-    struct ThreadCacheNode *neighbors[2];
+    struct ThreadCacheNode *neighbors[2] __dma_aligned;
 
     mram_read((__mram_ptr void *)node, (void *)neighbors,
               2 * sizeof(__mram_ptr struct ThreadCacheNode *));
@@ -89,7 +89,7 @@ int freeThreadCache(struct ThreadCache *threadCache, __mram_ptr void *pointer) {
       return 1;
     }
 
-    struct ThreadCacheNode *neighbors[2];
+    struct ThreadCacheNode *neighbors[2] __dma_aligned;
 
     mram_read((__mram_ptr void *)node, (void *)neighbors,
               2 * sizeof(__mram_ptr struct ThreadCacheNode *));
@@ -106,19 +106,13 @@ int freeThreadCache(struct ThreadCache *threadCache, __mram_ptr void *pointer) {
 void initThreadCacheNode(struct ThreadCache *threadCache,
                          __mram_ptr struct ThreadCacheNode *node,
                          __mram_ptr struct ThreadCacheNode *prev) {
-  struct ThreadCacheNode *prevNeighbors[2];
+  // NOTE: the new node is fully initialized before it is linked, so a
+  // concurrent list walker never observes an uninitialized header
+  struct ThreadCacheNode *neighbors[2] __dma_aligned = {
+      (struct ThreadCacheNode *)prev, NULL};
 
-  mram_read((__mram_ptr void *)prev, (void *)prevNeighbors,
-            2 * sizeof(__mram_ptr struct ThreadCacheNode *));
-
-  prevNeighbors[1] = (struct ThreadCache *)node;
-
-  mram_write(prevNeighbors, (__mram_ptr void *)prev,
-             2 * sizeof(__mram_ptr struct ThreadCacheNode *));
-
-  struct ThreadCacheNode *neighbors[2] = {(struct ThreadCacheNode *)prev, NULL};
-
-  int metadata[4] = {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF};
+  int metadata[4] __dma_aligned = {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+                                   0xFFFFFFFF};
 
   mram_write(neighbors, (__mram_ptr void *)node,
              2 * sizeof(__mram_ptr struct ThreadCacheNode *));
@@ -127,12 +121,26 @@ void initThreadCacheNode(struct ThreadCache *threadCache,
              ((__mram_ptr void *)node) +
                  2 * sizeof(__mram_ptr struct ThreadCacheNode *),
              4 * sizeof(int));
+
+  // NOTE: the root node has no predecessor; linking it would clobber MRAM
+  // address 0
+  if (prev != NULL) {
+    struct ThreadCacheNode *prevNeighbors[2] __dma_aligned;
+
+    mram_read((__mram_ptr void *)prev, (void *)prevNeighbors,
+              2 * sizeof(__mram_ptr struct ThreadCacheNode *));
+
+    prevNeighbors[1] = (struct ThreadCacheNode *)node;
+
+    mram_write(prevNeighbors, (__mram_ptr void *)prev,
+               2 * sizeof(__mram_ptr struct ThreadCacheNode *));
+  }
 }
 
 void finiThreadCacheNode(struct ThreadCache *threadCache,
                          __mram_ptr struct ThreadCacheNode *node) {
-  struct ThreadCacheNode *neighbors[2];
-  int metadata[4];
+  struct ThreadCacheNode *neighbors[2] __dma_aligned;
+  int metadata[4] __dma_aligned;
 
   mram_read((__mram_ptr void *)node, (void *)neighbors,
             2 * sizeof(__mram_ptr struct ThreadCacheNode *));
@@ -140,18 +148,18 @@ void finiThreadCacheNode(struct ThreadCache *threadCache,
                 2 * sizeof(__mram_ptr struct ThreadCacheNode *),
             (void *)metadata, 4 * sizeof(int));
 
-  assert(metadata[0] = 0xFFFFFFFF);
-  assert(metadata[1] = 0xFFFFFFFF);
-  assert(metadata[2] = 0xFFFFFFFF);
-  assert(metadata[3] = 0xFFFFFFFF);
+  assert(metadata[0] == 0xFFFFFFFF);
+  assert(metadata[1] == 0xFFFFFFFF);
+  assert(metadata[2] == 0xFFFFFFFF);
+  assert(metadata[3] == 0xFFFFFFFF);
 
   __mram_ptr struct ThreadCacheNode *prev =
       (__mram_ptr struct ThreadCacheNode *)neighbors[0];
   __mram_ptr struct ThreadCacheNode *next =
       (__mram_ptr struct ThreadCacheNode *)neighbors[1];
 
-  struct ThreadCacheNode *prevNeighbors[2];
-  struct ThreadCacheNode *nextNeighbors[2];
+  struct ThreadCacheNode *prevNeighbors[2] __dma_aligned;
+  struct ThreadCacheNode *nextNeighbors[2] __dma_aligned;
 
   mram_read((__mram_ptr void *)prev, (void *)prevNeighbors,
             2 * sizeof(__mram_ptr struct ThreadCacheNode *));
@@ -171,7 +179,7 @@ void finiThreadCacheNode(struct ThreadCache *threadCache,
 
 __mram_ptr void *allocateThreadCacheNode(
     struct ThreadCache *threadCache, __mram_ptr struct ThreadCacheNode *node) {
-  int metadata[4];
+  int metadata[4] __dma_aligned;
 
   mram_read(((__mram_ptr void *)node) +
                 2 * sizeof(__mram_ptr struct ThreadCacheNode *),
@@ -257,17 +265,27 @@ int freeThreadCacheNode(struct ThreadCache *threadCache,
                         __mram_ptr void *pointer) {
   if (((__mram_ptr void *)node) + 24 <= pointer &&
       pointer < ((__mram_ptr void *)node) + threadCache->pageSize) {
-    int metadata[4];
+    int metadata[4] __dma_aligned;
     mram_read(((__mram_ptr void *)node) +
                   2 * sizeof(__mram_ptr struct ThreadCacheNode *),
               (void *)metadata, 4 * sizeof(int));
 
     int chunkIndex = getThreadCacheChunkIndex(threadCache, node, pointer);
 
-    int metadataIndex = chunkIndex / 32;
-    int metadataShift = chunkIndex % 32;
+    assert((pointer - ((__mram_ptr void *)node) - 24) %
+               threadCache->sizeClass ==
+           0);
+    assert(chunkIndex < getThreadCacheNumChunks(threadCache) &&
+           chunkIndex < 128);
+
+    // NOTE: must mirror allocateThreadCacheNode, which hands out chunk k from
+    // bit (31 - k % 32) of metadata[3 - k / 32]
+    int metadataIndex = 3 - chunkIndex / 32;
+    int metadataShift = 31 - chunkIndex % 32;
 
     int mask = 0b1 << metadataShift;
+
+    assert((metadata[metadataIndex] & mask) == 0 && "double free");
 
     metadata[metadataIndex] |= mask;
 
@@ -302,4 +320,58 @@ int getThreadCacheChunkIndex(struct ThreadCache *threadCache,
 
   return (((__mram_ptr void *)pointer) - ((__mram_ptr void *)node) - 24) /
          threadCache->sizeClass;
+}
+
+int countThreadCachePages(struct ThreadCache *threadCache) {
+  int numPages = 0;
+
+  __mram_ptr struct ThreadCacheNode *node = threadCache->root;
+  while (node != NULL) {
+    numPages++;
+
+    struct ThreadCacheNode *neighbors[2] __dma_aligned;
+
+    mram_read((__mram_ptr void *)node, (void *)neighbors,
+              2 * sizeof(__mram_ptr struct ThreadCacheNode *));
+
+    node = (__mram_ptr struct ThreadCacheNode *)neighbors[1];
+  }
+
+  return numPages;
+}
+
+int countThreadCacheAllocatedChunks(struct ThreadCache *threadCache) {
+  int numChunks = getThreadCacheNumChunks(threadCache);
+  if (numChunks > 128) {
+    numChunks = 128;
+  }
+
+  int numAllocatedChunks = 0;
+
+  __mram_ptr struct ThreadCacheNode *node = threadCache->root;
+  while (node != NULL) {
+    int metadata[4] __dma_aligned;
+
+    mram_read(((__mram_ptr void *)node) +
+                  2 * sizeof(__mram_ptr struct ThreadCacheNode *),
+              (void *)metadata, 4 * sizeof(int));
+
+    for (int chunkIndex = 0; chunkIndex < numChunks; chunkIndex++) {
+      int metadataIndex = 3 - chunkIndex / 32;
+      int metadataShift = 31 - chunkIndex % 32;
+
+      if ((metadata[metadataIndex] & (0b1 << metadataShift)) == 0) {
+        numAllocatedChunks++;
+      }
+    }
+
+    struct ThreadCacheNode *neighbors[2] __dma_aligned;
+
+    mram_read((__mram_ptr void *)node, (void *)neighbors,
+              2 * sizeof(__mram_ptr struct ThreadCacheNode *));
+
+    node = (__mram_ptr struct ThreadCacheNode *)neighbors[1];
+  }
+
+  return numAllocatedChunks;
 }

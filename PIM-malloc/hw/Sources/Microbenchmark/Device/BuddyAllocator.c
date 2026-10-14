@@ -211,7 +211,8 @@ void initMetadata(struct BuddyAllocator *buddyAllocator) {
     if (pos + buddyAllocator->bufferSize < buddyAllocator->metadataSize) {
       size = buddyAllocator->bufferSize;
     } else {
-      size = buddyAllocator->metadataSize - pos;
+      // NOTE: DMA sizes must be multiples of 8
+      size = (buddyAllocator->metadataSize - pos + 7) & ~7;
 
       memset(buddyAllocator->wramBuffer, 0xFFFFFFFF, size);
     }
@@ -360,6 +361,10 @@ int getMetadata(struct BuddyAllocator *buddyAllocator, int level,
               ->sumMetadataSizePerLevels[buddyAllocator->numBuddyLevels];
     }
 
+    // NOTE: DMA sizes must be multiples of 8; the padding up to
+    // mramMallocableRegionBase keeps the rounded transfer inside metadata
+    dmaTransferSize = (dmaTransferSize + 7) & ~7;
+
     mram_read(mramAddress, buddyAllocator->wramBuffer, dmaTransferSize);
 
     buddyAllocator->bufferedMetadataIndex =
@@ -446,6 +451,10 @@ void setMetadata(struct BuddyAllocator *buddyAllocator, int level,
           buddyAllocator
               ->sumMetadataSizePerLevels[buddyAllocator->numBuddyLevels];
     }
+
+    // NOTE: DMA sizes must be multiples of 8; the padding up to
+    // mramMallocableRegionBase keeps the rounded transfer inside metadata
+    dmaTransferSize = (dmaTransferSize + 7) & ~7;
 
     mram_read(mramAddress, buddyAllocator->wramBuffer, dmaTransferSize);
 

@@ -9,3 +9,4 @@ file(GLOB_RECURSE SRCS *.c
 add_executable(Microbenchmark_test_device ${SRCS})
 
 target_include_directories(Microbenchmark_test_device PUBLIC "${CMAKE_SOURCE_DIR}/Sources")
+target_include_directories(Microbenchmark_test_device PUBLIC "${CMAKE_SOURCE_DIR}/Tests")

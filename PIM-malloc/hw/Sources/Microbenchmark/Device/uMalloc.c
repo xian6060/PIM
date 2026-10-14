@@ -7,6 +7,23 @@
 #include <mutex.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
+
+// NOTE: one hardware mutex per owner tasklet guards all of that tasklet's
+// thread caches (bitmaps and page lists), because alien flushes from other
+// tasklets modify them concurrently with the owner
+uint8_t __atomic_bit ownerMutexes[UMALLOC_MAX_THREADS];
+
+static struct UMallocStats *getStats(struct UMalloc *uMalloc) {
+  return &uMalloc->stats[me()];
+}
+
+static void lockOwner(struct UMalloc *uMalloc, int ownerId) {
+  mutex_lock(&ownerMutexes[ownerId]);
+  getStats(uMalloc)->ownerLockAcquires++;
+}
+
+static void unlockOwner(int ownerId) { mutex_unlock(&ownerMutexes[ownerId]); }
 
 static struct AlienCache *getAlienCache(struct UMalloc *uMalloc, int threadId) {
   if (threadId == 0) {
@@ -43,6 +60,7 @@ static struct AlienCache *getAlienCache(struct UMalloc *uMalloc, int threadId) {
     return uMalloc->alienCache15;
   } else {
     assert(0 && "threadId > 15");
+    return NULL;
   }
 }
 
@@ -140,13 +158,17 @@ static struct ThreadCache **getThreadCachesByThreadId(struct UMalloc *uMalloc,
     return uMalloc->threadCaches15;
   } else {
     assert(0 && "threadId > 15");
+    return NULL;
   }
 }
 
-static int tryFreeInThreadCaches(struct ThreadCache **threadCaches,
-                                 int sizeClassesLength,
+// NOTE: the caller must hold the lock of the owner of threadCaches
+static int tryFreeInThreadCaches(struct UMalloc *uMalloc,
+                                 struct ThreadCache **threadCaches,
                                  __mram_ptr void *pointer) {
-  for (int i = 0; i < sizeClassesLength; i++) {
+  for (int i = 0; i < uMalloc->sizeClassesLength; i++) {
+    getStats(uMalloc)->cacheSearches++;
+
     if (freeThreadCache(threadCaches[i], pointer)) {
       return 1;
     }
@@ -155,14 +177,20 @@ static int tryFreeInThreadCaches(struct ThreadCache **threadCaches,
   return 0;
 }
 
+static int tryFreeInOwnerThreadCaches(struct UMalloc *uMalloc, int ownerId,
+                                      __mram_ptr void *pointer) {
+  lockOwner(uMalloc, ownerId);
+  int isFreed = tryFreeInThreadCaches(
+      uMalloc, getThreadCachesByThreadId(uMalloc, ownerId), pointer);
+  unlockOwner(ownerId);
+
+  return isFreed;
+}
+
 static int tryFreeInAllThreadCaches(struct UMalloc *uMalloc,
                                     __mram_ptr void *pointer) {
-  for (int threadId = 0; threadId < 16; threadId++) {
-    struct ThreadCache **threadCaches =
-        getThreadCachesByThreadId(uMalloc, threadId);
-
-    if (tryFreeInThreadCaches(threadCaches, uMalloc->sizeClassesLength,
-                              pointer)) {
+  for (int threadId = 0; threadId < UMALLOC_MAX_THREADS; threadId++) {
+    if (tryFreeInOwnerThreadCaches(uMalloc, threadId, pointer)) {
       return 1;
     }
   }
@@ -172,16 +200,19 @@ static int tryFreeInAllThreadCaches(struct UMalloc *uMalloc,
 
 static void flushAlienCache(struct UMalloc *uMalloc,
                             struct AlienCache *alienCache) {
-  int processed = 0;
+  struct UMallocStats *stats = getStats(uMalloc);
+  stats->alienFlushes++;
+
   for (int i = 0; i < alienCache->count; i++) {
     __mram_ptr void *pointer = alienCache->entries[i];
 
     if (!tryFreeInAllThreadCaches(uMalloc, pointer)) {
       buddyFree(uMalloc->buddyAllocator, pointer);
+      stats->buddyFrees++;
     }
 
     alienCache->entries[i] = NULL;
-    processed++;
+    stats->flushedPointers++;
   }
 
   alienCache->count = 0;
@@ -190,10 +221,11 @@ static void flushAlienCache(struct UMalloc *uMalloc,
 static void enqueueAlienPointer(struct UMalloc *uMalloc,
                                 struct AlienCache *alienCache,
                                 __mram_ptr void *pointer) {
-  if (alienCache->count < ALIEN_CACHE_SIZE) {
-    alienCache->entries[alienCache->count] = pointer;
-    alienCache->count++;
-  }
+  assert(alienCache->count < ALIEN_CACHE_SIZE);
+
+  alienCache->entries[alienCache->count] = pointer;
+  alienCache->count++;
+  getStats(uMalloc)->alienEnqueues++;
 
   if (alienCache->count >= alienCache->flushThreshold) {
     flushAlienCache(uMalloc, alienCache);
@@ -201,11 +233,36 @@ static void enqueueAlienPointer(struct UMalloc *uMalloc,
 }
 
 void flushAllAlienCaches(struct UMalloc *uMalloc) {
-  for (int threadId = 0; threadId < 16; threadId++) {
+  for (int threadId = 0; threadId < UMALLOC_MAX_THREADS; threadId++) {
     struct AlienCache *alienCache = getAlienCache(uMalloc, threadId);
 
     if (alienCache->count > 0) {
       flushAlienCache(uMalloc, alienCache);
+    }
+  }
+}
+
+void flushCurrentThreadAlienCache(struct UMalloc *uMalloc) {
+  struct AlienCache *alienCache = getAlienCache(uMalloc, me());
+
+  if (alienCache->count > 0) {
+    flushAlienCache(uMalloc, alienCache);
+  }
+}
+
+// NOTE: must only be called while no tasklet allocates or frees
+void getUMallocUsage(struct UMalloc *uMalloc, int *numPages,
+                     int *numAllocatedChunks) {
+  *numPages = 0;
+  *numAllocatedChunks = 0;
+
+  for (int threadId = 0; threadId < UMALLOC_MAX_THREADS; threadId++) {
+    struct ThreadCache **threadCaches =
+        getThreadCachesByThreadId(uMalloc, threadId);
+
+    for (int i = 0; i < uMalloc->sizeClassesLength; i++) {
+      *numPages += countThreadCachePages(threadCaches[i]);
+      *numAllocatedChunks += countThreadCacheAllocatedChunks(threadCaches[i]);
     }
   }
 }
@@ -266,6 +323,10 @@ struct UMalloc *initUMalloc(int mallocableRegionSize, int pageSize,
       mem_alloc(sizeClassesLength * sizeof(struct ThreadCache *));
 
   initAlienCaches(uMalloc, alienFlushThreshold);
+
+  uMalloc->stats =
+      mem_alloc(UMALLOC_MAX_THREADS * sizeof(struct UMallocStats));
+  memset(uMalloc->stats, 0, UMALLOC_MAX_THREADS * sizeof(struct UMallocStats));
 
   for (int i = 0; i < sizeClassesLength; i++) {
     uMalloc->threadCaches0[i] =
@@ -351,7 +412,13 @@ __mram_ptr void *allocateUMalloc(struct UMalloc *uMalloc, int size) {
   struct ThreadCache *threadCache = getThreadCache(uMalloc, size);
 
   if (threadCache != NULL) {
-    return allocateThreadCache(threadCache);
+    int threadId = me();
+
+    lockOwner(uMalloc, threadId);
+    __mram_ptr void *pointer = allocateThreadCache(threadCache);
+    unlockOwner(threadId);
+
+    return pointer;
   } else {
     return buddyAllocate(uMalloc->buddyAllocator, size);
   }
@@ -359,11 +426,9 @@ __mram_ptr void *allocateUMalloc(struct UMalloc *uMalloc, int size) {
 
 void freeUMalloc(struct UMalloc *uMalloc, __mram_ptr void *pointer) {
   int threadId = me();
-  struct ThreadCache **threadCaches =
-      getThreadCachesByThreadId(uMalloc, threadId);
 
-  if (tryFreeInThreadCaches(threadCaches, uMalloc->sizeClassesLength,
-                            pointer)) {
+  if (tryFreeInOwnerThreadCaches(uMalloc, threadId, pointer)) {
+    getStats(uMalloc)->localFrees++;
     return;
   }
 
@@ -419,5 +484,6 @@ struct ThreadCache *getThreadCache(struct UMalloc *uMalloc, int size) {
     return uMalloc->threadCaches15[sizeClassIndex];
   } else {
     assert(0 && "threadId > 15");
+    return NULL;
   }
 }

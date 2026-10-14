@@ -2,16 +2,30 @@
 #define UMALLOC_DEVICE_UMALLOC_H_
 
 #include <mram.h>
+#include <stdint.h>
 
 #include "Microbenchmark/Device/BuddyAllocator.h"
 #include "Microbenchmark/Device/ThreadCache.h"
 
 #define ALIEN_CACHE_SIZE 64
+#define UMALLOC_MAX_THREADS 16
 
 struct AlienCache {
   __mram_ptr void *entries[ALIEN_CACHE_SIZE];
   int count;
   int flushThreshold;
+};
+
+// NOTE: per-tasklet event counters; each tasklet only touches its own entry
+struct UMallocStats {
+  uint32_t localFrees;         // freed into the freeing tasklet's own cache
+  uint32_t alienEnqueues;      // pushed into the freeing tasklet's alien cache
+  uint32_t alienFlushes;       // alien cache flush events
+  uint32_t flushedPointers;    // pointers drained by alien cache flushes
+  uint32_t ownerLockAcquires;  // per-owner thread cache lock acquisitions
+  uint32_t cacheSearches;      // thread caches searched for a pointer
+  uint32_t buddyFrees;         // pointers handed back to the buddy allocator
+  uint32_t reserved;
 };
 
 struct UMalloc {
@@ -55,6 +69,8 @@ struct UMalloc {
   struct AlienCache *alienCache13;
   struct AlienCache *alienCache14;
   struct AlienCache *alienCache15;
+
+  struct UMallocStats *stats;
 };
 
 struct UMalloc *initUMalloc(int mallocableRegionSize, int pageSize,
@@ -66,6 +82,10 @@ void finiUMalloc(struct UMalloc *uMalloc);
 __mram_ptr void *allocateUMalloc(struct UMalloc *uMalloc, int size);
 void freeUMalloc(struct UMalloc *uMalloc, __mram_ptr void *pointer);
 void flushAllAlienCaches(struct UMalloc *uMalloc);
+void flushCurrentThreadAlienCache(struct UMalloc *uMalloc);
+
+void getUMallocUsage(struct UMalloc *uMalloc, int *numPages,
+                     int *numAllocatedChunks);
 
 struct ThreadCache *getThreadCache(struct UMalloc *uMalloc, int size);
 

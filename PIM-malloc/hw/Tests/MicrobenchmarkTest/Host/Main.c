@@ -1,188 +1,296 @@
 #include <dpu.h>
-#include <assert.h>
 #include <errno.h>
 #include <limits.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
-#include <stdio.h>
 
-// UPMEM 官方強烈建議的錯誤捕捉巨集
-#ifndef DPU_ASSERT
-#define DPU_ASSERT(x) assert((x) == DPU_OK)
-#endif
+#include "MicrobenchmarkTest/BenchmarkResult.h"
 
-#define NUM_DPUS 1
-#define DEFAULT_REPETITIONS 10
+#define MAX_THRESHOLDS 32
+#define DEFAULT_THRESHOLDS "1,2,4,8,16,32,64"
+#define DEFAULT_REPETITIONS 3
 #define DEFAULT_RAW_OUTPUT "alien_cache_threshold_raw.csv"
 #define DEFAULT_SUMMARY_OUTPUT "alien_cache_threshold_summary.csv"
 
-static unsigned long long run_benchmark(int alienCacheFlushThreshold) {
-    int mallocableRegionSize = 2 * 1024 * 1024;
-    int pageSize = 4 * 1024;
-    int bufferSize = 1 * 1024;
+struct BenchmarkConfig {
+  int mallocableRegionSize;
+  int pageSize;
+  int bufferSize;
+  int allocSize;
+  int batchSize;
+  int numRounds;
+  int localFreePercent;
+};
 
-    struct dpu_set_t dpu_set;
+static void checkDpu(dpu_error_t error, const char *what) {
+  if (error != DPU_OK) {
+    fprintf(stderr, "%s failed: %s\n", what, dpu_error_to_string(error));
+    exit(EXIT_FAILURE);
+  }
+}
+
+static void copyIntToDpu(struct dpu_set_t dpuSet, const char *symbol,
+                         int value) {
+  checkDpu(dpu_copy_to(dpuSet, symbol, 0, &value, sizeof(value)), symbol);
+}
+
+static struct BenchmarkResult runBenchmark(struct dpu_set_t dpuSet,
+                                           const struct BenchmarkConfig *config,
+                                           int threshold, int validate) {
+  checkDpu(dpu_load(dpuSet, DPU_BINARY, NULL), "dpu_load");
+
+  copyIntToDpu(dpuSet, "mallocableRegionSize", config->mallocableRegionSize);
+  copyIntToDpu(dpuSet, "pageSize", config->pageSize);
+  copyIntToDpu(dpuSet, "bufferSize", config->bufferSize);
+  copyIntToDpu(dpuSet, "alienCacheFlushThreshold", threshold);
+  copyIntToDpu(dpuSet, "allocSize", config->allocSize);
+  copyIntToDpu(dpuSet, "batchSize", config->batchSize);
+  copyIntToDpu(dpuSet, "numRounds", config->numRounds);
+  copyIntToDpu(dpuSet, "localFreePercent", config->localFreePercent);
+  copyIntToDpu(dpuSet, "validate", validate);
+
+  dpu_error_t error = dpu_launch(dpuSet, DPU_SYNCHRONOUS);
+  if (error != DPU_OK) {
     struct dpu_set_t dpu;
+    fprintf(stderr, "dpu_launch failed (threshold=%d): %s\n", threshold,
+            dpu_error_to_string(error));
+    DPU_FOREACH(dpuSet, dpu) { dpu_log_read(dpu, stderr); }
+    exit(EXIT_FAILURE);
+  }
 
-    DPU_ASSERT(dpu_alloc(NUM_DPUS, "backend=simulator", &dpu_set));
-    DPU_ASSERT(dpu_load(dpu_set, DPU_BINARY, NULL));
+  struct BenchmarkResult result;
+  struct dpu_set_t dpu;
+  DPU_FOREACH(dpuSet, dpu) {
+    checkDpu(dpu_copy_from(dpu, "result", 0, &result, sizeof(result)),
+             "dpu_copy_from(result)");
+  }
 
-    int i;
-    DPU_FOREACH(dpu_set, dpu, i) { dpu_prepare_xfer(dpu, &mallocableRegionSize); }
-    DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, "mallocableRegionSize", 0, sizeof(int), DPU_XFER_DEFAULT));
-
-    DPU_FOREACH(dpu_set, dpu, i) { dpu_prepare_xfer(dpu, &pageSize); }
-    DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, "pageSize", 0, sizeof(int), DPU_XFER_DEFAULT));
-
-    DPU_FOREACH(dpu_set, dpu, i) { dpu_prepare_xfer(dpu, &bufferSize); }
-    DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, "bufferSize", 0, sizeof(int), DPU_XFER_DEFAULT));
-
-    DPU_FOREACH(dpu_set, dpu, i) { dpu_prepare_xfer(dpu, &alienCacheFlushThreshold); }
-    DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, "alienCacheFlushThreshold", 0, sizeof(int), DPU_XFER_DEFAULT));
-
-    struct timespec t0, t1;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
-    DPU_ASSERT(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-
-    time_t elapsed_seconds = t1.tv_sec - t0.tv_sec;
-    long elapsed_nanoseconds = t1.tv_nsec - t0.tv_nsec;
-    if (elapsed_nanoseconds < 0) {
-        elapsed_seconds--;
-        elapsed_nanoseconds += 1000000000L;
-    }
-
-    unsigned long long elapsed_us =
-        (unsigned long long)elapsed_seconds * 1000000ULL +
-        (unsigned long long)elapsed_nanoseconds / 1000ULL;
-
-    DPU_ASSERT(dpu_free(dpu_set));
-    return elapsed_us;
+  return result;
 }
 
-static int parse_positive_int(const char *value, const char *name) {
-    char *end = NULL;
-    long parsed = strtol(value, &end, 10);
-    if (value[0] == '\0' || end == value || *end != '\0' || parsed <= 0 ||
-        parsed > 1000000) {
-        fprintf(stderr, "Invalid %s: %s\n", name, value);
-        exit(EXIT_FAILURE);
-    }
-    return (int)parsed;
+static int parseInt(const char *value, const char *name, int minimum,
+                    int maximum) {
+  char *end = NULL;
+  long parsed = strtol(value, &end, 10);
+  if (value[0] == '\0' || *end != '\0' || parsed < minimum ||
+      parsed > maximum) {
+    fprintf(stderr, "Invalid %s: %s (expected %d..%d)\n", name, value, minimum,
+            maximum);
+    exit(EXIT_FAILURE);
+  }
+  return (int)parsed;
 }
 
-static double calculate_mean(const unsigned long long *samples, int count) {
-    unsigned long long total = 0;
-    for (int i = 0; i < count; i++) {
-        total += samples[i];
+static int parseThresholds(const char *value, int *thresholds) {
+  char buffer[256];
+  snprintf(buffer, sizeof(buffer), "%s", value);
+
+  int count = 0;
+  for (char *token = strtok(buffer, ","); token != NULL;
+       token = strtok(NULL, ",")) {
+    if (count == MAX_THRESHOLDS) {
+      fprintf(stderr, "Too many thresholds (max %d)\n", MAX_THRESHOLDS);
+      exit(EXIT_FAILURE);
     }
-    return (double)total / count;
+    thresholds[count++] = parseInt(token, "threshold", 1, 64);
+  }
+
+  if (count == 0) {
+    fprintf(stderr, "No thresholds given\n");
+    exit(EXIT_FAILURE);
+  }
+  return count;
 }
 
-static double calculate_sample_stddev(const unsigned long long *samples,
-                                      int count, double mean) {
-    if (count < 2) {
-        return 0.0;
-    }
+static int compareU64(const void *a, const void *b) {
+  uint64_t x = *(const uint64_t *)a;
+  uint64_t y = *(const uint64_t *)b;
+  return (x > y) - (x < y);
+}
 
-    double squared_difference_sum = 0.0;
-    for (int i = 0; i < count; i++) {
-        double difference = (double)samples[i] - mean;
-        squared_difference_sum += difference * difference;
-    }
-    return sqrt(squared_difference_sum / (count - 1));
+static void usage(const char *program) {
+  fprintf(stderr,
+          "Usage: %s [--thresholds LIST] [--repetitions N] [--rounds N]\n"
+          "          [--batch N] [--size BYTES] [--local-percent P]\n"
+          "          [--skip-validation] [--raw-output PATH]\n"
+          "          [--summary-output PATH]\n"
+          "Defaults: --thresholds %s --repetitions %d --rounds 8 --batch 64\n"
+          "          --size 32 --local-percent 50\n",
+          program, DEFAULT_THRESHOLDS, DEFAULT_REPETITIONS);
 }
 
 int main(int argc, char **argv) {
-    int repetitions = DEFAULT_REPETITIONS;
-    const char *raw_output = DEFAULT_RAW_OUTPUT;
-    const char *summary_output = DEFAULT_SUMMARY_OUTPUT;
+  struct BenchmarkConfig config = {
+      .mallocableRegionSize = 2 * 1024 * 1024,
+      .pageSize = 4 * 1024,
+      .bufferSize = 1 * 1024,
+      .allocSize = 32,
+      .batchSize = 64,
+      .numRounds = 8,
+      .localFreePercent = 50,
+  };
 
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--repetitions") == 0 && i + 1 < argc) {
-            repetitions = parse_positive_int(argv[++i], "repetitions");
-        } else if (strcmp(argv[i], "--raw-output") == 0 && i + 1 < argc) {
-            raw_output = argv[++i];
-        } else if (strcmp(argv[i], "--summary-output") == 0 && i + 1 < argc) {
-            summary_output = argv[++i];
-        } else {
-            fprintf(stderr,
-                    "Usage: %s [--repetitions N] [--raw-output PATH] "
-                    "[--summary-output PATH]\n",
-                    argv[0]);
-            return EXIT_FAILURE;
-        }
+  int thresholds[MAX_THRESHOLDS];
+  int numThresholds = parseThresholds(DEFAULT_THRESHOLDS, thresholds);
+  int repetitions = DEFAULT_REPETITIONS;
+  int skipValidation = 0;
+  const char *rawOutput = DEFAULT_RAW_OUTPUT;
+  const char *summaryOutput = DEFAULT_SUMMARY_OUTPUT;
+
+  for (int i = 1; i < argc; i++) {
+    int hasValue = i + 1 < argc;
+
+    if (strcmp(argv[i], "--thresholds") == 0 && hasValue) {
+      numThresholds = parseThresholds(argv[++i], thresholds);
+    } else if (strcmp(argv[i], "--repetitions") == 0 && hasValue) {
+      repetitions = parseInt(argv[++i], "repetitions", 1, 1000);
+    } else if (strcmp(argv[i], "--rounds") == 0 && hasValue) {
+      config.numRounds = parseInt(argv[++i], "rounds", 1, 100000);
+    } else if (strcmp(argv[i], "--batch") == 0 && hasValue) {
+      config.batchSize = parseInt(argv[++i], "batch", 1, 128);
+    } else if (strcmp(argv[i], "--size") == 0 && hasValue) {
+      config.allocSize = parseInt(argv[++i], "size", 8, 2048);
+    } else if (strcmp(argv[i], "--local-percent") == 0 && hasValue) {
+      config.localFreePercent = parseInt(argv[++i], "local-percent", 0, 100);
+    } else if (strcmp(argv[i], "--skip-validation") == 0) {
+      skipValidation = 1;
+    } else if (strcmp(argv[i], "--raw-output") == 0 && hasValue) {
+      rawOutput = argv[++i];
+    } else if (strcmp(argv[i], "--summary-output") == 0 && hasValue) {
+      summaryOutput = argv[++i];
+    } else {
+      usage(argv[0]);
+      return EXIT_FAILURE;
+    }
+  }
+
+  FILE *rawFile = fopen(rawOutput, "w");
+  FILE *summaryFile = fopen(summaryOutput, "w");
+  if (rawFile == NULL || summaryFile == NULL) {
+    fprintf(stderr, "Cannot open CSV output: %s\n", strerror(errno));
+    return EXIT_FAILURE;
+  }
+
+  fprintf(rawFile,
+          "threshold,repetition,total_cycles,alloc_cycles,free_cycles,"
+          "drain_cycles,local_frees,alien_enqueues,alien_flushes,"
+          "flushed_pointers,owner_lock_acquires,cache_searches,buddy_frees,"
+          "pages\n");
+  fprintf(summaryFile,
+          "threshold,repetitions,median_total_cycles,mean_total_cycles,"
+          "stddev_total_cycles,min_total_cycles,max_total_cycles,"
+          "mean_alloc_cycles,mean_free_cycles,mean_drain_cycles,"
+          "alien_flushes,owner_lock_acquires,cache_searches,pages,"
+          "validation\n");
+
+  printf("config: size=%d batch=%d rounds=%d local=%d%% tasklets=16 "
+         "repetitions=%d\n",
+         config.allocSize, config.batchSize, config.numRounds,
+         config.localFreePercent, repetitions);
+  printf("%9s %12s %12s %12s %12s %8s %10s %10s %6s %s\n", "threshold",
+         "median_cyc", "alloc_cyc", "free_cyc", "drain_cyc", "flushes",
+         "lock_acq", "searches", "pages", "validation");
+
+  struct dpu_set_t dpuSet;
+  checkDpu(dpu_alloc(1, "backend=simulator", &dpuSet), "dpu_alloc");
+
+  uint64_t *samples = malloc((size_t)repetitions * sizeof(uint64_t));
+  int exitCode = EXIT_SUCCESS;
+
+  for (int t = 0; t < numThresholds; t++) {
+    int threshold = thresholds[t];
+
+    // NOTE: validation writes and checks a tag in every allocation, so it
+    // runs separately from the timed repetitions
+    const char *validation = "skipped";
+    if (!skipValidation) {
+      struct BenchmarkResult check =
+          runBenchmark(dpuSet, &config, threshold, 1);
+
+      if (check.validationErrors == 0 && check.leakedChunks == 0) {
+        validation = "pass";
+      } else {
+        validation = "FAIL";
+        exitCode = EXIT_FAILURE;
+        fprintf(stderr,
+                "threshold=%d validation failed: %llu tag errors, %llu "
+                "leaked chunks\n",
+                threshold, (unsigned long long)check.validationErrors,
+                (unsigned long long)check.leakedChunks);
+      }
     }
 
-    FILE *raw_file = fopen(raw_output, "w");
-    if (raw_file == NULL) {
-        fprintf(stderr, "Cannot open raw CSV '%s': %s\n", raw_output,
-                strerror(errno));
-        return EXIT_FAILURE;
+    struct BenchmarkResult last;
+    double sumTotal = 0, sumAlloc = 0, sumFree = 0, sumDrain = 0;
+
+    for (int r = 0; r < repetitions; r++) {
+      last = runBenchmark(dpuSet, &config, threshold, 0);
+      samples[r] = last.totalCycles;
+      sumTotal += last.totalCycles;
+      sumAlloc += last.allocCycles;
+      sumFree += last.freeCycles;
+      sumDrain += last.drainCycles;
+
+      fprintf(rawFile,
+              "%d,%d,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,"
+              "%llu\n",
+              threshold, r + 1, (unsigned long long)last.totalCycles,
+              (unsigned long long)last.allocCycles,
+              (unsigned long long)last.freeCycles,
+              (unsigned long long)last.drainCycles,
+              (unsigned long long)last.localFrees,
+              (unsigned long long)last.alienEnqueues,
+              (unsigned long long)last.alienFlushes,
+              (unsigned long long)last.flushedPointers,
+              (unsigned long long)last.ownerLockAcquires,
+              (unsigned long long)last.cacheSearches,
+              (unsigned long long)last.buddyFrees,
+              (unsigned long long)last.numPages);
     }
 
-    FILE *summary_file = fopen(summary_output, "w");
-    if (summary_file == NULL) {
-        fprintf(stderr, "Cannot open summary CSV '%s': %s\n", summary_output,
-                strerror(errno));
-        fclose(raw_file);
-        return EXIT_FAILURE;
+    double mean = sumTotal / repetitions;
+    double squaredDifferenceSum = 0;
+    for (int r = 0; r < repetitions; r++) {
+      squaredDifferenceSum += (samples[r] - mean) * (samples[r] - mean);
     }
+    double stddev =
+        repetitions > 1 ? sqrt(squaredDifferenceSum / (repetitions - 1)) : 0;
 
-    printf("[1] 程式啟動，準備設定參數...\n");
-    int thresholds[] = {1, 8, 16, 32, 64};
-    int thresholdsLength = sizeof(thresholds) / sizeof(thresholds[0]);
+    qsort(samples, repetitions, sizeof(uint64_t), compareU64);
+    double median = repetitions % 2
+                        ? samples[repetitions / 2]
+                        : (samples[repetitions / 2 - 1] +
+                           samples[repetitions / 2]) /
+                              2.0;
 
-    fprintf(raw_file, "threshold,repetition,elapsed_us\n");
-    fprintf(summary_file,
-            "threshold,repetitions,mean_us,stddev_us,min_us,max_us\n");
+    fprintf(summaryFile,
+            "%d,%d,%.1f,%.1f,%.1f,%llu,%llu,%.1f,%.1f,%.1f,%llu,%llu,%llu,"
+            "%llu,%s\n",
+            threshold, repetitions, median, mean, stddev,
+            (unsigned long long)samples[0],
+            (unsigned long long)samples[repetitions - 1],
+            sumAlloc / repetitions, sumFree / repetitions,
+            sumDrain / repetitions, (unsigned long long)last.alienFlushes,
+            (unsigned long long)last.ownerLockAcquires,
+            (unsigned long long)last.cacheSearches,
+            (unsigned long long)last.numPages, validation);
 
-    printf("[2] 每個 threshold 重複量測 %d 次...\n", repetitions);
-    for (int i = 0; i < thresholdsLength; i++) {
-        int threshold = thresholds[i];
-        unsigned long long *samples =
-            malloc((size_t)repetitions * sizeof(unsigned long long));
-        if (samples == NULL) {
-            fprintf(stderr, "Cannot allocate sample buffer\n");
-            fclose(raw_file);
-            fclose(summary_file);
-            return EXIT_FAILURE;
-        }
+    printf("%9d %12.0f %12.0f %12.0f %12.0f %8llu %10llu %10llu %6llu %s\n",
+           threshold, median, sumAlloc / repetitions, sumFree / repetitions,
+           sumDrain / repetitions, (unsigned long long)last.alienFlushes,
+           (unsigned long long)last.ownerLockAcquires,
+           (unsigned long long)last.cacheSearches,
+           (unsigned long long)last.numPages, validation);
+    fflush(stdout);
+  }
 
-        unsigned long long minimum = ULLONG_MAX;
-        unsigned long long maximum = 0;
-        printf("[3.%d] 正在量測 threshold = %d ...\n", i + 1, threshold);
-        for (int repetition = 0; repetition < repetitions; repetition++) {
-            samples[repetition] = run_benchmark(threshold);
-            fprintf(raw_file, "%d,%d,%llu\n", threshold, repetition + 1,
-                    samples[repetition]);
-            if (samples[repetition] < minimum) {
-                minimum = samples[repetition];
-            }
-            if (samples[repetition] > maximum) {
-                maximum = samples[repetition];
-            }
-            printf("[Host] threshold=%d repetition=%d elapsed=%llu us\n",
-                   threshold, repetition + 1, samples[repetition]);
-        }
+  free(samples);
+  checkDpu(dpu_free(dpuSet), "dpu_free");
+  fclose(rawFile);
+  fclose(summaryFile);
 
-        double mean = calculate_mean(samples, repetitions);
-        double stddev =
-            calculate_sample_stddev(samples, repetitions, mean);
-        fprintf(summary_file, "%d,%d,%.3f,%.3f,%llu,%llu\n", threshold,
-                repetitions, mean, stddev, minimum, maximum);
-        printf("[Summary] threshold=%d mean=%.3f us stddev=%.3f us "
-               "min=%llu us max=%llu us\n",
-               threshold, mean, stddev, minimum, maximum);
-        free(samples);
-    }
-
-    fclose(raw_file);
-    fclose(summary_file);
-    printf("[4] 全部 DPU 測試執行完畢，CSV 已寫入 %s 與 %s。\n", raw_output,
-           summary_output);
-
-    return EXIT_SUCCESS;
+  printf("CSV written to %s and %s\n", rawOutput, summaryOutput);
+  return exitCode;
 }
