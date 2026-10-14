@@ -63,6 +63,7 @@ static void collectResult(uint64_t allocCycles, uint64_t freeCycles,
   result.ownerLockAcquires = 0;
   result.cacheSearches = 0;
   result.buddyFrees = 0;
+  result.bitmapUpdates = 0;
   result.validationErrors = 0;
 
   for (int threadId = 0; threadId < NR_TASKLETS; threadId++) {
@@ -75,6 +76,7 @@ static void collectResult(uint64_t allocCycles, uint64_t freeCycles,
     result.ownerLockAcquires += stats->ownerLockAcquires;
     result.cacheSearches += stats->cacheSearches;
     result.buddyFrees += stats->buddyFrees;
+    result.bitmapUpdates += stats->bitmapUpdates;
     result.validationErrors += validationErrors[threadId];
   }
 

@@ -1,0 +1,10 @@
+config: size=32 batch=64 rounds=8 local=50% remote=neighbor tasklets=16 repetitions=3
+threshold   median_cyc    alloc_cyc     free_cyc    drain_cyc  flushes   lock_acq   searches bitmap_upd  pages validation
+        1      2952848      1333200      1618080         1568     4096      16384       8192       8192    128 pass
+        2      3176368      1331968      1842992         1408     2048      14336       8192       6144    128 pass
+        4      3054272      1331840      1721024         1408     1024      13312       8192       5120    128 pass
+        8      2993632      1331952      1660272         1408      512      12800       8192       4608    128 pass
+       16      2963168      1331952      1629808         1408      256      12544       8192       4352    128 pass
+       32      2948000      1332496      1613792         1712      128      12416       8192       4224    128 pass
+       64      2946448      1336672      1608352         1424       64      12352       8192       4160    128 pass
+CSV written to /home/xian/pim2/PIM/PIM-malloc/hw/results/step3_page_merge/raw_local50.csv and /home/xian/pim2/PIM/PIM-malloc/hw/results/step3_page_merge/summary_local50.csv

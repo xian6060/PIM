@@ -80,6 +80,7 @@ static void initAlienCache(struct AlienCache *alienCache,
                            int flushThreshold) {
   alienCache->count = 0;
   alienCache->flushThreshold = clampAlienFlushThreshold(flushThreshold);
+  alienCache->ownerMask = 0;
 
   for (int i = 0; i < ALIEN_CACHE_SIZE; i++) {
     alienCache->entries[i] = NULL;
@@ -189,100 +190,119 @@ static void freeInOwnerThreadCache(struct UMalloc *uMalloc, int ownerId,
 
   int isFreed = freeThreadCacheNode(threadCache, page, pointer);
   assert(isFreed);
+
+  getStats(uMalloc)->bitmapUpdates++;
 }
 
-// NOTE: frees one owner's group of entries, given by order[begin, end) or by
-// [begin, end) itself when order is NULL, under a single lock acquisition
-static void freeAlienGroup(struct UMalloc *uMalloc,
-                           struct AlienCache *alienCache, int ownerId,
-                           const uint8_t *order, int begin, int end) {
+#define ALIEN_LIST_END 0xFF
+
+// NOTE: frees one owner's list under a single lock acquisition; consecutive
+// entries in the same page share one bitmap read and write
+static void freeAlienList(struct UMalloc *uMalloc,
+                          struct AlienCache *alienCache, int ownerId) {
+  struct UMallocStats *stats = getStats(uMalloc);
+  struct ThreadCache **threadCaches =
+      getThreadCachesByThreadId(uMalloc, ownerId);
+
+  __mram_ptr struct ThreadCacheNode *page = NULL;
+  struct ThreadCache *threadCache = NULL;
+  int freedBits[4];
+
   lockOwner(uMalloc, ownerId);
 
-  for (int k = begin; k < end; k++) {
-    int i = order != NULL ? order[k] : k;
+  for (int i = alienCache->heads[ownerId]; i != ALIEN_LIST_END;
+       i = alienCache->next[i]) {
     __mram_ptr void *pointer = alienCache->entries[i];
+    __mram_ptr struct ThreadCacheNode *pointerPage =
+        getThreadCachePage(uMalloc, pointer);
 
-    freeInOwnerThreadCache(uMalloc, ownerId, alienCache->sizeClassIndices[i],
-                           getThreadCachePage(uMalloc, pointer), pointer);
+    if (pointerPage != page) {
+      if (page != NULL) {
+        freeThreadCacheNodeChunks(threadCache, page, freedBits);
+        stats->bitmapUpdates++;
+      }
+
+      page = pointerPage;
+      threadCache = threadCaches[alienCache->sizeClassIndices[i]];
+      freedBits[0] = freedBits[1] = freedBits[2] = freedBits[3] = 0;
+    }
+
+    markThreadCacheChunk(threadCache, page, pointer, freedBits);
   }
+
+  freeThreadCacheNodeChunks(threadCache, page, freedBits);
+  stats->bitmapUpdates++;
 
   unlockOwner(ownerId);
 }
 
-// NOTE: entries are grouped by owner so each owner's lock is taken once per
-// flush instead of once per pointer
 static void flushAlienCache(struct UMalloc *uMalloc,
                             struct AlienCache *alienCache) {
   struct UMallocStats *stats = getStats(uMalloc);
   stats->alienFlushes++;
+  stats->flushedPointers += alienCache->count;
 
-  int count = alienCache->count;
-  uint32_t ownerMask = 0;
-
-  for (int i = 0; i < count; i++) {
-    __mram_ptr struct ThreadCacheNode *page =
-        getThreadCachePage(uMalloc, alienCache->entries[i]);
-
-    int ownerId;
-    int sizeClassIndex;
-    readThreadCacheNodeOwner(page, &ownerId, &sizeClassIndex);
-    stats->cacheSearches++;
-
-    alienCache->ownerIds[i] = ownerId;
-    alienCache->sizeClassIndices[i] = sizeClassIndex;
-    ownerMask |= 1u << ownerId;
+  // NOTE: every tasklet starts with the owner after itself; walking owners
+  // from 0 in all tasklets makes simultaneous flushes convoy on one lock,
+  // and waiting tasklets spin and steal pipeline slots
+  int start = me() + 1;
+  if (start == UMALLOC_MAX_THREADS) {
+    start = 0;
   }
 
-  stats->flushedPointers += count;
-  alienCache->count = 0;
+  uint32_t ownerMasks[2] = {alienCache->ownerMask & (~0u << start),
+                            alienCache->ownerMask & ~(~0u << start)};
 
-  // NOTE: fast path for a single owner, which skips the sort entirely
-  if ((ownerMask & (ownerMask - 1)) == 0) {
-    freeAlienGroup(uMalloc, alienCache, alienCache->ownerIds[0], NULL, 0,
-                   count);
-    return;
-  }
+  for (int half = 0; half < 2; half++) {
+    uint32_t ownerMask = ownerMasks[half];
 
-  // NOTE: counting sort by owner
-  int ownerStarts[UMALLOC_MAX_THREADS + 1];
+    while (ownerMask != 0) {
+      int ownerId = __builtin_ctz(ownerMask);
+      ownerMask &= ownerMask - 1;
 
-  for (int ownerId = 0; ownerId <= UMALLOC_MAX_THREADS; ownerId++) {
-    ownerStarts[ownerId] = 0;
-  }
-
-  for (int i = 0; i < count; i++) {
-    ownerStarts[alienCache->ownerIds[i] + 1]++;
-  }
-
-  for (int ownerId = 0; ownerId < UMALLOC_MAX_THREADS; ownerId++) {
-    ownerStarts[ownerId + 1] += ownerStarts[ownerId];
-  }
-
-  // NOTE: ownerStarts[ownerId] is used as the insertion cursor, after which
-  // it equals the end of ownerId's group, i.e. the start of ownerId + 1's
-  for (int i = 0; i < count; i++) {
-    alienCache->order[ownerStarts[alienCache->ownerIds[i]]++] = i;
-  }
-
-  int groupStart = 0;
-  for (int ownerId = 0; ownerId < UMALLOC_MAX_THREADS; ownerId++) {
-    int groupEnd = ownerStarts[ownerId];
-
-    if (groupStart < groupEnd) {
-      freeAlienGroup(uMalloc, alienCache, ownerId, alienCache->order,
-                     groupStart, groupEnd);
+      freeAlienList(uMalloc, alienCache, ownerId);
     }
-
-    groupStart = groupEnd;
   }
+
+  alienCache->ownerMask = 0;
+  alienCache->count = 0;
 }
 
 static void enqueueAlienPointer(struct UMalloc *uMalloc,
                                 struct AlienCache *alienCache,
-                                __mram_ptr void *pointer) {
+                                __mram_ptr void *pointer, int ownerId,
+                                int sizeClassIndex) {
+  // NOTE: a threshold of 1 disables caching; free directly and skip the
+  // list bookkeeping
+  if (alienCache->flushThreshold == 1) {
+    struct UMallocStats *stats = getStats(uMalloc);
+    stats->alienEnqueues++;
+    stats->alienFlushes++;
+    stats->flushedPointers++;
+
+    lockOwner(uMalloc, ownerId);
+    freeInOwnerThreadCache(uMalloc, ownerId, sizeClassIndex,
+                           getThreadCachePage(uMalloc, pointer), pointer);
+    unlockOwner(ownerId);
+    return;
+  }
+
   assert(alienCache->count < ALIEN_CACHE_SIZE);
 
-  alienCache->entries[alienCache->count] = pointer;
+  int i = alienCache->count;
+  alienCache->entries[i] = pointer;
+  alienCache->sizeClassIndices[i] = sizeClassIndex;
+  alienCache->next[i] = ALIEN_LIST_END;
+
+  uint32_t ownerBit = 1u << ownerId;
+  if (alienCache->ownerMask & ownerBit) {
+    alienCache->next[alienCache->tails[ownerId]] = i;
+  } else {
+    alienCache->heads[ownerId] = i;
+    alienCache->ownerMask |= ownerBit;
+  }
+  alienCache->tails[ownerId] = i;
+
   alienCache->count++;
   getStats(uMalloc)->alienEnqueues++;
 
@@ -509,7 +529,8 @@ void freeUMalloc(struct UMalloc *uMalloc, __mram_ptr void *pointer) {
     return;
   }
 
-  enqueueAlienPointer(uMalloc, getAlienCache(uMalloc, threadId), pointer);
+  enqueueAlienPointer(uMalloc, getAlienCache(uMalloc, threadId), pointer,
+                      ownerId, sizeClassIndex);
 }
 
 struct ThreadCache *getThreadCache(struct UMalloc *uMalloc, int size) {
