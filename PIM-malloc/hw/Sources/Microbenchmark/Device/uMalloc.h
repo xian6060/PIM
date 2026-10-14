@@ -6,7 +6,7 @@
 #include "Microbenchmark/Device/BuddyAllocator.h"
 #include "Microbenchmark/Device/ThreadCache.h"
 
-#define ALIEN_CACHE_SIZE 16
+#define ALIEN_CACHE_SIZE 64
 
 struct AlienCache {
   __mram_ptr void *entries[ALIEN_CACHE_SIZE];

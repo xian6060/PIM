@@ -16,5 +16,5 @@ target_include_directories(Microbenchmark_test_host PUBLIC "${DPU_INCLUDE_DIRS}"
 target_compile_definitions(Microbenchmark_test_host PRIVATE
     DPU_BINARY="${CMAKE_BINARY_DIR}/Tests/MicrobenchmarkTest/Device/Microbenchmark_test_device")
 
-target_link_libraries(Microbenchmark_test_host "${DPU_LIBRARIES}")
+target_link_libraries(Microbenchmark_test_host "${DPU_LIBRARIES}" m)
 target_link_directories(Microbenchmark_test_host PUBLIC "${UPMEM_HOME}/lib")
