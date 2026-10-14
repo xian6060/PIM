@@ -75,15 +75,6 @@ int getThreadCacheChunkIndex(struct ThreadCache* threadCache,
                              __mram_ptr struct ThreadCacheNode* node,
                              __mram_ptr void* pointer);
 
-// NOTE: batched free of several chunks in one page: mark each chunk into a
-// zeroed freedBits, then apply them with a single bitmap read and write
-void markThreadCacheChunk(struct ThreadCache* threadCache,
-                          __mram_ptr struct ThreadCacheNode* node,
-                          __mram_ptr void* pointer, int freedBits[4]);
-void freeThreadCacheNodeChunks(struct ThreadCache* threadCache,
-                               __mram_ptr struct ThreadCacheNode* node,
-                               const int freedBits[4]);
-
 void readThreadCacheNodeOwner(__mram_ptr struct ThreadCacheNode* node,
                               int* ownerId, int* sizeClassIndex);
 

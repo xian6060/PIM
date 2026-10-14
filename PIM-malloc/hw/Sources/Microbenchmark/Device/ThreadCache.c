@@ -296,46 +296,6 @@ int freeThreadCacheNode(struct ThreadCache *threadCache,
   }
 }
 
-void markThreadCacheChunk(struct ThreadCache *threadCache,
-                          __mram_ptr struct ThreadCacheNode *node,
-                          __mram_ptr void *pointer, int freedBits[4]) {
-  int chunkIndex = getThreadCacheChunkIndex(threadCache, node, pointer);
-
-  assert((pointer - ((__mram_ptr void *)node) - THREAD_CACHE_HEADER_SIZE) %
-             threadCache->sizeClass ==
-         0);
-  assert(chunkIndex < getThreadCacheNumChunks(threadCache) &&
-         chunkIndex < 128);
-
-  // NOTE: same bit mapping as freeThreadCacheNode
-  int metadataIndex = 3 - chunkIndex / 32;
-  int mask = 0b1 << (31 - chunkIndex % 32);
-
-  assert((freedBits[metadataIndex] & mask) == 0 && "double free");
-
-  freedBits[metadataIndex] |= mask;
-}
-
-void freeThreadCacheNodeChunks(struct ThreadCache *threadCache,
-                               __mram_ptr struct ThreadCacheNode *node,
-                               const int freedBits[4]) {
-  int metadata[4] __dma_aligned;
-  mram_read(((__mram_ptr void *)node) +
-                2 * sizeof(__mram_ptr struct ThreadCacheNode *),
-            (void *)metadata, 4 * sizeof(int));
-
-  for (int i = 0; i < 4; i++) {
-    assert((metadata[i] & freedBits[i]) == 0 && "double free");
-
-    metadata[i] |= freedBits[i];
-  }
-
-  mram_write(metadata,
-             ((__mram_ptr void *)node) +
-                 2 * sizeof(__mram_ptr struct ThreadCacheNode *),
-             4 * sizeof(int));
-}
-
 int getThreadCacheNumChunks(struct ThreadCache *threadCache) {
   return (threadCache->pageSize - THREAD_CACHE_HEADER_SIZE) /
          threadCache->sizeClass;

@@ -191,22 +191,22 @@ int main(int argc, char **argv) {
           "threshold,repetition,total_cycles,alloc_cycles,free_cycles,"
           "drain_cycles,local_frees,alien_enqueues,alien_flushes,"
           "flushed_pointers,owner_lock_acquires,cache_searches,buddy_frees,"
-          "pages,bitmap_updates\n");
+          "pages\n");
   fprintf(summaryFile,
           "threshold,repetitions,median_total_cycles,mean_total_cycles,"
           "stddev_total_cycles,min_total_cycles,max_total_cycles,"
           "mean_alloc_cycles,mean_free_cycles,mean_drain_cycles,"
           "alien_flushes,owner_lock_acquires,cache_searches,pages,"
-          "bitmap_updates,validation\n");
+          "validation\n");
 
   printf("config: size=%d batch=%d rounds=%d local=%d%% remote=%s "
          "tasklets=16 repetitions=%d\n",
          config.allocSize, config.batchSize, config.numRounds,
          config.localFreePercent,
          config.remotePattern ? "scatter" : "neighbor", repetitions);
-  printf("%9s %12s %12s %12s %12s %8s %10s %10s %10s %6s %s\n", "threshold",
+  printf("%9s %12s %12s %12s %12s %8s %10s %10s %6s %s\n", "threshold",
          "median_cyc", "alloc_cyc", "free_cyc", "drain_cyc", "flushes",
-         "lock_acq", "searches", "bitmap_upd", "pages", "validation");
+         "lock_acq", "searches", "pages", "validation");
 
   struct dpu_set_t dpuSet;
   checkDpu(dpu_alloc(1, "backend=simulator", &dpuSet), "dpu_alloc");
@@ -250,7 +250,7 @@ int main(int argc, char **argv) {
 
       fprintf(rawFile,
               "%d,%d,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,"
-              "%llu,%llu\n",
+              "%llu\n",
               threshold, r + 1, (unsigned long long)last.totalCycles,
               (unsigned long long)last.allocCycles,
               (unsigned long long)last.freeCycles,
@@ -262,8 +262,7 @@ int main(int argc, char **argv) {
               (unsigned long long)last.ownerLockAcquires,
               (unsigned long long)last.cacheSearches,
               (unsigned long long)last.buddyFrees,
-              (unsigned long long)last.numPages,
-              (unsigned long long)last.bitmapUpdates);
+              (unsigned long long)last.numPages);
     }
 
     double mean = sumTotal / repetitions;
@@ -283,7 +282,7 @@ int main(int argc, char **argv) {
 
     fprintf(summaryFile,
             "%d,%d,%.1f,%.1f,%.1f,%llu,%llu,%.1f,%.1f,%.1f,%llu,%llu,%llu,"
-            "%llu,%llu,%s\n",
+            "%llu,%s\n",
             threshold, repetitions, median, mean, stddev,
             (unsigned long long)samples[0],
             (unsigned long long)samples[repetitions - 1],
@@ -291,18 +290,14 @@ int main(int argc, char **argv) {
             sumDrain / repetitions, (unsigned long long)last.alienFlushes,
             (unsigned long long)last.ownerLockAcquires,
             (unsigned long long)last.cacheSearches,
-            (unsigned long long)last.numPages,
-            (unsigned long long)last.bitmapUpdates, validation);
+            (unsigned long long)last.numPages, validation);
 
-    printf(
-        "%9d %12.0f %12.0f %12.0f %12.0f %8llu %10llu %10llu %10llu %6llu "
-        "%s\n",
-        threshold, median, sumAlloc / repetitions, sumFree / repetitions,
-        sumDrain / repetitions, (unsigned long long)last.alienFlushes,
-        (unsigned long long)last.ownerLockAcquires,
-        (unsigned long long)last.cacheSearches,
-        (unsigned long long)last.bitmapUpdates,
-        (unsigned long long)last.numPages, validation);
+    printf("%9d %12.0f %12.0f %12.0f %12.0f %8llu %10llu %10llu %6llu %s\n",
+           threshold, median, sumAlloc / repetitions, sumFree / repetitions,
+           sumDrain / repetitions, (unsigned long long)last.alienFlushes,
+           (unsigned long long)last.ownerLockAcquires,
+           (unsigned long long)last.cacheSearches,
+           (unsigned long long)last.numPages, validation);
     fflush(stdout);
   }
 

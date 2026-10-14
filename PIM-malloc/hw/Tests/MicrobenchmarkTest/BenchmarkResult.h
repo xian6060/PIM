@@ -27,9 +27,6 @@ struct BenchmarkResult {
 
   // tag mismatches observed when validation is enabled
   uint64_t validationErrors;
-
-  // free-path bitmap read-modify-writes (one per page run in alien flushes)
-  uint64_t bitmapUpdates;
 };
 
 #endif
