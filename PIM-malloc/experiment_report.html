@@ -3,22 +3,20 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PIM-malloc 實驗報告 - Alien Cache Flush Threshold</title>
+  <title>Alien Cache 實驗報告</title>
   <style>
     :root {
       --bg: #0b1020;
-      --bg2: #111936;
       --panel: rgba(16, 23, 46, 0.82);
       --panel-strong: rgba(19, 29, 58, 0.96);
       --text: #eef2ff;
       --muted: #a7b0d6;
       --accent: #7dd3fc;
       --accent2: #34d399;
-      --warning: #f59e0b;
+      --warn: #fbbf24;
       --border: rgba(148, 163, 184, 0.2);
       --shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
       --radius: 20px;
-      --radius-sm: 14px;
       --mono: "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
       --sans: Inter, "Segoe UI", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
     }
@@ -30,21 +28,18 @@
       font-family: var(--sans);
       color: var(--text);
       background:
-        radial-gradient(circle at top left, rgba(125, 211, 252, 0.16), transparent 28%),
-        radial-gradient(circle at top right, rgba(52, 211, 153, 0.12), transparent 26%),
+        radial-gradient(circle at top left, rgba(125, 211, 252, 0.14), transparent 28%),
+        radial-gradient(circle at top right, rgba(52, 211, 153, 0.10), transparent 26%),
         linear-gradient(180deg, #080d1a 0%, var(--bg) 42%, #0c1329 100%);
       min-height: 100vh;
     }
 
-    .wrap {
-      width: min(1240px, calc(100% - 32px));
-      margin: 0 auto;
-      padding: 28px 0 48px;
-    }
+    a { color: var(--accent); }
+    code { font-family: var(--mono); font-size: 0.92em; color: #dbeafe; }
+
+    .wrap { width: min(1240px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 48px; }
 
     .hero {
-      position: relative;
-      overflow: hidden;
       border: 1px solid var(--border);
       border-radius: 28px;
       background: linear-gradient(160deg, rgba(17, 25, 54, 0.92), rgba(9, 14, 30, 0.96));
@@ -56,35 +51,8 @@
       align-items: center;
     }
 
-    .hero::before,
-    .hero::after {
-      content: "";
-      position: absolute;
-      border-radius: 999px;
-      filter: blur(10px);
-      opacity: 0.45;
-    }
-
-    .hero::before {
-      width: 220px;
-      height: 220px;
-      right: -60px;
-      top: -80px;
-      background: radial-gradient(circle, rgba(125, 211, 252, 0.5), transparent 65%);
-    }
-
-    .hero::after {
-      width: 180px;
-      height: 180px;
-      left: -40px;
-      bottom: -80px;
-      background: radial-gradient(circle, rgba(52, 211, 153, 0.4), transparent 65%);
-    }
-
     .eyebrow {
       display: inline-flex;
-      gap: 10px;
-      align-items: center;
       padding: 8px 14px;
       border: 1px solid var(--border);
       border-radius: 999px;
@@ -96,56 +64,14 @@
       margin-bottom: 18px;
     }
 
-    h1 {
-      margin: 0 0 14px;
-      font-size: clamp(32px, 4vw, 56px);
-      line-height: 1.05;
-      letter-spacing: -0.03em;
-    }
+    h1 { margin: 0 0 14px; font-size: clamp(30px, 4vw, 50px); line-height: 1.1; letter-spacing: -0.03em; }
+    .lede { margin: 0; color: var(--muted); font-size: 16px; line-height: 1.75; max-width: 68ch; }
 
-    .lede {
-      margin: 0;
-      color: var(--muted);
-      font-size: 16px;
-      line-height: 1.75;
-      max-width: 68ch;
-    }
-
-    .hero-grid {
-      display: grid;
-      gap: 14px;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .metric {
-      position: relative;
-      padding: 18px;
-      border-radius: 18px;
-      background: rgba(7, 12, 24, 0.5);
-      border: 1px solid var(--border);
-      backdrop-filter: blur(8px);
-    }
-
-    .metric .label {
-      color: var(--muted);
-      font-size: 12px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      margin-bottom: 10px;
-    }
-
-    .metric .value {
-      font-size: 28px;
-      font-weight: 800;
-      line-height: 1.1;
-      margin-bottom: 6px;
-    }
-
-    .metric .desc {
-      color: var(--muted);
-      font-size: 14px;
-      line-height: 1.45;
-    }
+    .hero-grid { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .metric { padding: 18px; border-radius: 18px; background: rgba(7, 12, 24, 0.5); border: 1px solid var(--border); }
+    .metric .label { color: var(--muted); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 10px; }
+    .metric .value { font-size: 28px; font-weight: 800; line-height: 1.1; margin-bottom: 6px; }
+    .metric .desc { color: var(--muted); font-size: 14px; line-height: 1.45; }
 
     .section {
       margin-top: 22px;
@@ -155,84 +81,27 @@
       box-shadow: var(--shadow);
       overflow: hidden;
     }
-
     .section-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: end;
-      gap: 16px;
       padding: 22px 24px 14px;
       border-bottom: 1px solid var(--border);
       background: linear-gradient(180deg, rgba(255,255,255,0.03), transparent);
     }
+    .section-header h2 { margin: 0 0 6px; font-size: 22px; letter-spacing: -0.02em; }
+    .section-header p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.6; max-width: 90ch; }
+    .content { padding: 22px 24px 26px; }
+    .content > * + * { margin-top: 18px; }
 
-    .section-header h2 {
-      margin: 0;
-      font-size: 22px;
-      letter-spacing: -0.02em;
-    }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .grid-2 > * + * { margin-top: 0; }
 
-    .section-header p {
-      margin: 0;
-      color: var(--muted);
-      font-size: 14px;
-      line-height: 1.6;
-      max-width: 72ch;
-      text-align: right;
-    }
-
-    .content {
-      padding: 22px 24px 26px;
-    }
-
-    .grid-2 {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 18px;
-    }
-
-    .card {
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      background: var(--panel-strong);
-      padding: 18px;
-    }
-
-    .card h3 {
-      margin: 0 0 12px;
-      font-size: 18px;
-    }
-
-    .card p, .card li {
-      color: var(--muted);
-      line-height: 1.75;
-      font-size: 14px;
-    }
-
-    .card ul {
-      margin: 0;
-      padding-left: 18px;
-    }
-
-    .setup-list {
-      display: grid;
-      gap: 10px;
-      margin-top: 12px;
-    }
-
-    .setup-item {
-      display: flex;
-      justify-content: space-between;
-      gap: 18px;
-      align-items: center;
-      border: 1px solid rgba(148, 163, 184, 0.18);
-      border-radius: 14px;
-      padding: 12px 14px;
-      background: rgba(255,255,255,0.03);
-    }
-
-    .setup-item strong { display: block; margin-bottom: 2px; }
-    .setup-item span { color: var(--muted); font-size: 13px; }
+    .card { border: 1px solid var(--border); border-radius: 18px; background: var(--panel-strong); padding: 18px; }
+    .card h3 { margin: 0 0 12px; font-size: 18px; }
+    .card p, .card li, .prose p, .prose li { color: var(--muted); line-height: 1.75; font-size: 14px; }
+    .card p:first-of-type { margin-top: 0; }
+    .card ul, .prose ul { margin: 0; padding-left: 20px; }
+    .card p:last-child, .prose p:last-child { margin-bottom: 0; }
+    .card.highlight { border-color: rgba(52, 211, 153, 0.45); }
+    .card.caution { border-color: rgba(251, 191, 36, 0.45); }
 
     .code {
       font-family: var(--mono);
@@ -247,115 +116,46 @@
       white-space: pre;
     }
 
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      overflow: hidden;
-      border-radius: 16px;
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,0.02);
-    }
-
+    .table-scroll { overflow-x: auto; border-radius: 16px; border: 1px solid var(--border); }
+    table { width: 100%; border-collapse: collapse; background: rgba(255,255,255,0.02); }
     thead th {
-      text-align: left;
-      font-size: 13px;
+      text-align: right;
+      font-size: 12px;
       color: var(--muted);
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      padding: 14px 16px;
+      letter-spacing: 0.06em;
+      padding: 12px 14px;
       background: rgba(255,255,255,0.03);
       border-bottom: 1px solid var(--border);
+      white-space: nowrap;
     }
-
+    thead th:first-child, tbody td:first-child { text-align: left; }
     tbody td {
-      padding: 14px 16px;
+      padding: 11px 14px;
       border-bottom: 1px solid rgba(148, 163, 184, 0.12);
       font-size: 14px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
     }
-
     tbody tr:last-child td { border-bottom: none; }
-    tbody td:nth-child(2), tbody td:nth-child(3) { font-family: var(--mono); }
-    tbody td:last-child { color: #d1fae5; font-weight: 700; }
+    td.best { color: #6ee7b7; font-weight: 700; }
+    td.worse { color: #fca5a5; }
 
-    .result-layout {
-      display: grid;
-      grid-template-columns: 1.15fr 0.85fr;
-      gap: 18px;
-      align-items: start;
-    }
-
-    .chart {
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
-      padding: 16px;
-      overflow: hidden;
-    }
-
-    .chart h3 {
-      margin: 0 0 12px;
-      font-size: 18px;
-    }
-
-    .legend {
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-      margin-bottom: 12px;
-      color: var(--muted);
-      font-size: 13px;
-    }
-
-    .dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 999px;
-      display: inline-block;
-      margin-right: 6px;
-      transform: translateY(1px);
-    }
-
-    .summary-list {
-      display: grid;
-      gap: 12px;
-    }
-
-    .summary-item {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 14px 16px;
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      background: rgba(255,255,255,0.03);
-    }
-
-    .summary-item span {
-      color: var(--muted);
-      font-size: 13px;
+    figure { margin: 0; }
+    figure img {
       display: block;
-      margin-bottom: 4px;
+      width: 100%;
+      height: auto;
+      border-radius: 16px;
+      border: 1px solid rgba(148, 163, 184, 0.16);
     }
+    figcaption { margin-top: 10px; color: var(--muted); font-size: 13px; line-height: 1.7; }
+    figcaption b { color: var(--text); }
 
-    .summary-item strong {
-      font-size: 18px;
-    }
-
-    .footer-note {
-      margin-top: 18px;
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.7;
-    }
-
-    .timeline {
-      display: grid;
-      gap: 10px;
-    }
-
+    .timeline { display: grid; gap: 10px; }
     .step {
       display: grid;
-      grid-template-columns: 38px 1fr;
+      grid-template-columns: 52px 1fr;
       gap: 12px;
       align-items: start;
       padding: 12px 14px;
@@ -363,78 +163,31 @@
       background: rgba(255,255,255,0.03);
       border: 1px solid rgba(148, 163, 184, 0.14);
     }
-
     .step b {
       display: grid;
       place-items: center;
-      width: 38px;
-      height: 38px;
-      border-radius: 12px;
+      height: 34px;
+      border-radius: 10px;
       color: #0b1020;
       background: linear-gradient(135deg, var(--accent), var(--accent2));
       font-size: 13px;
     }
+    .step b.skip { background: rgba(148, 163, 184, 0.35); color: var(--text); }
+    .step div { color: var(--muted); line-height: 1.7; font-size: 14px; }
+    .step strong { color: var(--text); }
+    .step code.hash { color: var(--accent); }
 
-    .step p {
-      margin: 0;
-      color: var(--muted);
-      line-height: 1.65;
-      font-size: 14px;
-    }
-
-    .stack {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-    }
-
-    .pill {
-      padding: 9px 12px;
-      border-radius: 999px;
-      border: 1px solid rgba(125, 211, 252, 0.22);
-      background: rgba(125, 211, 252, 0.08);
-      color: #e0f2fe;
-      font-size: 13px;
-    }
-
-    .svg-wrap {
-      width: 100%;
-      border-radius: 16px;
-      overflow: hidden;
-      border: 1px solid rgba(148, 163, 184, 0.16);
-      background: linear-gradient(180deg, rgba(4, 8, 20, 0.92), rgba(10, 16, 34, 0.88));
-    }
-
-    .note {
-      margin-top: 12px;
-      font-size: 13px;
-      color: var(--muted);
-      line-height: 1.7;
-    }
+    .note { color: var(--muted); font-size: 13px; line-height: 1.7; }
 
     @media (max-width: 980px) {
-      .hero,
-      .grid-2,
-      .result-layout {
-        grid-template-columns: 1fr;
-      }
-
-      .section-header {
-        flex-direction: column;
-        align-items: start;
-      }
-
-      .section-header p { text-align: left; }
+      .hero, .grid-2 { grid-template-columns: 1fr; }
     }
-
     @media (max-width: 720px) {
-      .wrap { width: min(100% - 20px, 1240px); padding-top: 14px; }
+      .wrap { width: calc(100% - 32px); padding-top: 14px; }
       .hero { padding: 22px; border-radius: 22px; }
-      .content { padding: 18px; }
-      .section-header { padding: 18px 18px 12px; }
-      h1 { font-size: 30px; }
+      .content { padding: 18px 16px; }
+      .section-header { padding: 18px 16px 12px; }
       .hero-grid { grid-template-columns: 1fr; }
-      .setup-item, .summary-item { flex-direction: column; align-items: start; }
     }
   </style>
 </head>
@@ -443,128 +196,199 @@
     <header class="hero">
       <div>
         <div class="eyebrow">PIM-malloc Experiment Report</div>
-        <h1>Alien Cache Flush Threshold<br/>Performance Study</h1>
+        <h1>Alien Cache<br/>改良與 Flush Threshold 實驗</h1>
         <p class="lede">
-          這份實驗報告量測 PIM-malloc 在不同 alien cache flush threshold 下的 host-side 執行時間。
-          實驗重點是把 `free()` 路徑中暫存的 foreign free pointer 在累積到不同閾值後進行 flush，
-          觀察整體 DPU 執行時間的變化。
+          本報告記錄 alien cache 的四個改良步驟：修正 bug、O(1) 查 owner、每個 owner 只拿一次鎖、合併同一頁的 bitmap 讀寫。
+          每一步都用重寫後的 benchmark 掃描 flush threshold 1 到 64，以 DPU cycles 作為指標。
+          程式碼在 <code>alien-cache-opt</code> 分支，每一步各一個 commit。
         </p>
       </div>
       <div class="hero-grid">
         <div class="metric">
-          <div class="label">Measurement Points</div>
-          <div class="value">5</div>
-          <div class="desc">single run, threshold = 1, 8, 16, 32, 64</div>
+          <div class="label">總加速</div>
+          <div class="value">6.3× – 11.2×</div>
+          <div class="desc">Step 0 → Step 3，threshold 1，neighbor 模式</div>
         </div>
         <div class="metric">
-          <div class="label">Execution Mode</div>
-          <div class="value">Host + DPU</div>
-          <div class="desc">UPMEM SDK simulator backend on WSL/Ubuntu</div>
+          <div class="label">主要來源</div>
+          <div class="value">O(1) owner</div>
+          <div class="desc">Step 1 單獨就帶來 5.7× – 9.1×</div>
         </div>
         <div class="metric">
-          <div class="label">Best Time</div>
-          <div class="value">21611 us</div>
-          <div class="desc">threshold = 32</div>
+          <div class="label">批次 flush 的效益</div>
+          <div class="value">−0.8% – +4%</div>
+          <div class="desc">Step 3 最佳批次 threshold（≥ 2）相對 threshold 1</div>
         </div>
         <div class="metric">
-          <div class="label">Worst Time</div>
-          <div class="value">26816 us</div>
-          <div class="desc">threshold = 1</div>
+          <div class="label">正確性驗證</div>
+          <div class="value">全部通過</div>
+          <div class="desc">每組設定都檢查配置重疊與 chunk 回收</div>
         </div>
       </div>
     </header>
 
     <section class="section">
       <div class="section-header">
-        <h2>實驗說明</h2>
-        <p>本實驗用來檢查 foreign free 在 alien cache 中累積後，閾值對執行時間的影響。</p>
+        <h2>結論摘要</h2>
+        <p>先講結果，細節在後面各節。</p>
       </div>
       <div class="content grid-2">
-        <div class="card">
-          <h3>實驗目的</h3>
-          <p>
-            驗證目前已加入的 alien cache flush 門檻是否會影響整體執行效率。
-            由於 `freeUMalloc()` 在目前 thread cache 找不到對應區塊時，會把 pointer 放進對應 thread 的 alien buffer，
-            因此閾值大小可能改變 flush 的頻率與成本分佈。
-          </p>
-          <div class="stack">
-            <span class="pill">foreign free</span>
-            <span class="pill">alien cache</span>
-            <span class="pill">threshold tuning</span>
-            <span class="pill">host timing</span>
-          </div>
-        </div>
-        <div class="card">
-          <h3>實驗流程</h3>
-          <div class="timeline">
-            <div class="step"><b>1</b><p>Host 傳入 `mallocableRegionSize`、`pageSize`、`bufferSize` 與 `alienCacheFlushThreshold` 到 DPU。</p></div>
-            <div class="step"><b>2</b><p>DPU 建立 `uMalloc`、thread caches 與 alien caches，並執行測試配置。</p></div>
-            <div class="step"><b>3</b><p>依序量測 threshold = 1、8、16、32、64，每次都記錄 `dpu_launch()` 的執行時間。</p></div>
-            <div class="step"><b>4</b><p>比較不同 threshold 下的時間，找出較佳的 flush 頻率範圍。</p></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="section">
-      <div class="section-header">
-        <h2>實驗設置</h2>
-        <p>建置與執行皆在 WSL Ubuntu 環境完成，使用附加的 UPMEM SDK。</p>
-      </div>
-      <div class="content grid-2">
-        <div class="card">
-          <h3>環境</h3>
-          <div class="setup-list">
-            <div class="setup-item"><div><strong>OS</strong><span>Windows + WSL Ubuntu</span></div><span>測試執行環境</span></div>
-            <div class="setup-item"><div><strong>SDK</strong><span>/home/xian/pim2/PIM/upmem-sdk</span></div><span>UPMEM SDK</span></div>
-            <div class="setup-item"><div><strong>Build</strong><span>python3 script/build.py --upmem-home ...</span></div><span>CMake + Ninja</span></div>
-            <div class="setup-item"><div><strong>Run</strong><span>hw/build/Tests/MicrobenchmarkTest/Host/Microbenchmark_test_host</span></div><span>Host binary</span></div>
-          </div>
-        </div>
-        <div class="card">
-          <h3>固定參數</h3>
-          <div class="code">NUM_DPUS = 1
-NR_TASKLETS = 1
-mallocableRegionSize = 2 MiB
-pageSize = 4 KiB
-bufferSize = 1 KiB
-sizeClasses = {16, 32, 64, 128, 256, 512, 1024, 2048}</div>
-          <p class="note">
-            這次量測只改變 `alienCacheFlushThreshold`，其餘設定維持一致，避免混入額外變因。
-          </p>
-        </div>
-      </div>
-    </section>
-
-    <section class="section">
-      <div class="section-header">
-        <h2>更動的檔案</h2>
-        <p>本次為了讓閾值可調與量測自動化，修改了 device 與 host 的入口。</p>
-      </div>
-      <div class="content grid-2">
-        <div class="card">
-          <h3>已修改檔案</h3>
+        <div class="card highlight">
+          <h3>主要發現</h3>
           <ul>
-            <li><strong><a href="hw/Sources/Microbenchmark/Device/uMalloc.h">hw/Sources/Microbenchmark/Device/uMalloc.h</a></strong>：新增 `alienFlushThreshold` 參數到 `initUMalloc()`。</li>
-            <li><strong><a href="hw/Sources/Microbenchmark/Device/uMalloc.c">hw/Sources/Microbenchmark/Device/uMalloc.c</a></strong>：將 `AlienCache.flushThreshold` 改為可由外部傳入並 clamp 到合法範圍。</li>
-            <li><strong><a href="hw/Tests/MicrobenchmarkTest/Device/Main.c">hw/Tests/MicrobenchmarkTest/Device/Main.c</a></strong>：新增 `alienCacheFlushThreshold` 的 device 端輸入與初始化傳遞。</li>
-            <li><strong><a href="hw/Tests/MicrobenchmarkTest/Host/Main.c">hw/Tests/MicrobenchmarkTest/Host/Main.c</a></strong>：改成依序測量 threshold = 1, 8, 16, 32, 64。</li>
+            <li>效能提升幾乎都來自<strong>修正 bug 與第 1 步</strong>：free 不再掃描所有 thread cache 的串列，總 cycles 從 18.7M / 34.3M 降到約 3.3M / 3.8M。</li>
+            <li>在原本的設計下，<strong>threshold 越大越慢</strong>（64 比 1 慢 7–8%），因為批次 flush 沒有分攤任何成本。</li>
+            <li>第 3 步之後批次處理才真正省下 MRAM 存取（bitmap 讀改寫最多減少 64 倍），但<strong>總時間只在 neighbor 模式快 0.2–0.8%，scatter 模式反而慢 2–4%</strong>。</li>
+            <li>因此在這個環境下，<strong>threshold 32 不是最佳值</strong>。直接釋放（threshold 1）在每組設定都是最快或接近最快。</li>
           </ul>
         </div>
-        <div class="card">
-          <h3>變更摘要</h3>
-          <div class="code">freeUMalloc()
-  └─ not in current thread cache
-      └─ enqueueAlienPointer()
-          └─ flush when count >= alienCacheFlushThreshold
+        <div class="card caution">
+          <h3>原因與限制</h3>
+          <ul>
+            <li>DPU 上 16 個 tasklet 輪流執行，MRAM DMA 的延遲大多被其他 tasklet 蓋過；真正的瓶頸是 pipeline 的指令吞吐量。批次處理省下的 DMA，大致被它多出的管理指令抵掉。</li>
+            <li>UPMEM 的硬體 mutex 沒人搶時只要一條指令，所以「減少拿鎖次數」本身幾乎沒有效益。</li>
+            <li>所有數據來自 UPMEM SDK 的模擬器（<code>backend=simulator</code>），尚未在實體 DPU 上驗證。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
 
-Host Main
-  └─ run_benchmark(threshold)
-      └─ transfer threshold to DPU
-      └─ launch and time execution</div>
-          <p class="note">
-            目前的測量仍是單次執行結果；如果要做更嚴謹的比較，建議再加上多次重複與平均值/標準差。
-          </p>
+    <section class="section">
+      <div class="section-header">
+        <h2>為什麼要重做實驗</h2>
+        <p>舊版報告認為 threshold 32 最佳，但舊實驗量不出 threshold 的影響。</p>
+      </div>
+      <div class="content">
+        <div class="grid-2">
+          <div class="card">
+            <h3>舊 benchmark 的問題</h3>
+            <ul>
+              <li>每個 tasklet 只配置 1 個指標，再釋放鄰居的 1 個指標，所以每個 alien cache <strong>最多只收到 1 個指標</strong>。threshold ≥ 2 時，free 過程中從不 flush，最後由 tasklet 0 一次清空。</li>
+              <li>計時用 Host 端的 <code>dpu_launch()</code> 經過時間，包含模擬器本身的開銷，雜訊遠大於要量的差異。</li>
+              <li>舊報告寫 <code>NR_TASKLETS = 1</code>，實際編譯參數是 16；「best vs worst 差 5.2%」實際為 24.1%。</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>allocator 本身的 bug</h3>
+            <ul>
+              <li><strong>bitmap 位元對應錯誤</strong>：allocate 用 <code>metadata[3 − k/32]</code> 的第 <code>31 − k%32</code> 位，free 卻用 <code>metadata[k/32]</code> 的第 <code>k%32</code> 位，等於把第 k 塊當成第 127−k 塊釋放。部分釋放時 chunk 會永遠回收不了，size 2048 甚至會耗盡記憶體讓 DPU 當掉。</li>
+              <li><strong>data race</strong>：flush 時直接改其他 tasklet 的 bitmap，沒有任何同步。</li>
+              <li>建立第一個 page 時（<code>prev = NULL</code>）會讀寫 MRAM 位址 0；<code>assert</code> 誤用 <code>=</code>；buddy metadata 的 DMA 大小 268 bytes 不是 8 的倍數。</li>
+            </ul>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th>舊 benchmark，Host 計時 (µs)</th><th>第 1 次</th><th>第 2 次</th><th>第 3 次</th><th>第 4 次</th><th>第 5 次</th><th>中位數</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>threshold 1</td><td>19571</td><td>19886</td><td>19712</td><td>21130</td><td>19749</td><td>19749</td></tr>
+              <tr><td>threshold 8</td><td>19236</td><td>19305</td><td>18404</td><td>17590</td><td>18099</td><td>18404</td></tr>
+              <tr><td>threshold 16</td><td>19076</td><td>18583</td><td>17640</td><td>18392</td><td>18641</td><td>18583</td></tr>
+              <tr><td>threshold 32</td><td>17785</td><td>18277</td><td>28738</td><td>18217</td><td>17901</td><td>18217</td></tr>
+              <tr><td>threshold 64</td><td>19468</td><td>18315</td><td>27279</td><td>17942</td><td>17785</td><td>18315</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="note">
+          五次重複量測中，最快的 threshold 每次都不同（32 兩次，8、16、64 各一次），threshold 8–64 的中位數差距只有約 2%。
+          舊實驗只能看出「threshold 1 比 ≥ 2 慢」，看不出 32 比較好。新方法改用 DPU cycles，在模擬器中重複三次的結果完全相同（標準差 0）。
+        </p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <h2>程式變動</h2>
+        <p>分支 <code>alien-cache-opt</code>，每一步一個 commit，可用 <code>git checkout &lt;hash&gt;</code> 回到任一版本。</p>
+      </div>
+      <div class="content">
+        <div class="timeline">
+          <div class="step"><b>0</b><div>
+            <strong>修正 bug 並重寫 benchmark</strong>（<code class="hash">aba042a</code>）<br/>
+            free 改成和 allocate 相同的 bit 對應，並加上 double free 檢查；每個 owner tasklet 一把硬體 mutex（<code>uint8_t __atomic_bit ownerMutexes[16]</code>），保護它的 thread cache，allocate、本地 free、alien flush 都要先拿鎖；新 page 先完整初始化再串進串列，root page 不再寫 MRAM 位址 0；修正 <code>assert</code>；DMA 大小補齊到 8 的倍數並對齊緩衝區。這一版維持原本的 alien cache 設計，作為 baseline。
+          </div></div>
+          <div class="step"><b>1</b><div>
+            <strong>O(1) 查出指標的 owner</strong>（<code class="hash">e5d1b87</code>）<br/>
+            page header 從 24 bytes 擴成 32 bytes，多存 <code>ownerId</code> 與 <code>sizeClassIndex</code>。page 由 buddy allocator 配置、以 pageSize 對齊，所以 <code>page = base + ((p − base) &amp; ~(pageSize − 1))</code>，讀一次 header 就知道 owner，不必掃描 16 個 tasklet × 8 個 size class 的串列。剛好落在 page 開頭的指標是 buddy 直接配置的大區塊，直接交給 <code>buddyFree</code>。
+          </div></div>
+          <div class="step"><b>B</b><div>
+            <strong>benchmark 加入 scatter 模式</strong>（<code class="hash">28a79a9</code>）<br/>
+            原本每個 tasklet 只釋放鄰居的指標，alien cache 裡永遠只有一個 owner，「依 owner 分組」顯示不出效果。scatter 模式讓每個 tasklet 釋放其他 15 個 tasklet 的指標。第 1 步用同一個 binary 重新量測，讓之後每一步都用同一個 benchmark 比較。
+          </div></div>
+          <div class="step"><b>2</b><div>
+            <strong>每次 flush 對每個 owner 只拿一次鎖</strong>（<code class="hash">1809a90</code>）<br/>
+            flush 時先讀出每個指標的 owner，用 counting sort 依 owner 分組，每組只拿一次鎖；整批只有一個 owner 時跳過排序。沒有採用「owner 自己來收」的 MRAM 收件匣，因為每個指標要多一次 DMA 寫入與讀取。
+          </div></div>
+          <div class="step"><b>3</b><div>
+            <strong>依 owner 分串列，合併同一頁的 bitmap 讀寫</strong>（<code class="hash">6fc5e1f</code>）<br/>
+            free 已經讀過 header，所以 enqueue 時就把指標串進該 owner 的串列，flush 不再重讀 header 或排序。同一頁的連續指標先在 WRAM 裡合成一個遮罩，只做一次 bitmap 讀改寫。每個 tasklet 從「自己的下一個 owner」開始 flush，避免所有 tasklet 同時搶 owner 0 的鎖。threshold 1 直接釋放，不經過串列。
+          </div></div>
+          <div class="step"><b class="skip">4</b><div>
+            <strong>批次 buddy free：跳過</strong><br/>
+            第 1 步之後，大區塊在 free 時就直接交給 buddy allocator，不會進 alien cache；所有量測中 alien 路徑的 <code>buddy_frees</code> 都是 0，沒有東西可以批次處理。
+          </div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <h2>實驗方法</h2>
+        <p>DPU 端 benchmark：<code>hw/Tests/MicrobenchmarkTest/Device/Main.c</code>；Host 端：<code>hw/Tests/MicrobenchmarkTest/Host/Main.c</code>。</p>
+      </div>
+      <div class="content">
+        <div class="grid-2">
+          <div class="card">
+            <h3>工作負載</h3>
+            <ul>
+              <li>16 個 tasklet 各跑 <strong>8 輪</strong>；每輪先配置 <strong>64 個 32-byte</strong> 物件，barrier 後再釋放。</li>
+              <li>每批的前 <code>local%</code> 個物件由 owner 自己釋放，其餘由別的 tasklet 釋放（跨執行緒 free）；每個指標剛好被釋放一次。</li>
+              <li><strong>neighbor</strong>：tasklet t 的物件全部由 t − 1 釋放，每個 alien cache 只有一個 owner。</li>
+              <li><strong>scatter</strong>：tasklet t 的第 i 個物件由 t − 1 − (i mod 15) 釋放，每個 tasklet 會釋放其他 15 個 owner 的物件。</li>
+              <li>最後每個 tasklet flush 自己的 alien cache。</li>
+              <li>threshold 掃描 1、2、4、8、16、32、64；每組設定重複 3 次取中位數。</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>量測與驗證</h3>
+            <ul>
+              <li><strong>計時</strong>：tasklet 0 在 barrier 之間讀 <code>perfcounter</code>，分別累計 alloc、free、drain 三個階段的 DPU cycles，存進 <code>__host struct BenchmarkResult</code>，Host 用 <code>dpu_copy_from</code> 讀回。</li>
+              <li><strong>計數器</strong>：每個 tasklet 各自累計本地 free、alien enqueue、flush 次數、拿鎖次數、header 讀取次數、bitmap 讀改寫次數，結束時加總；另外統計使用中的 page 數。</li>
+              <li><strong>驗證</strong>：計時前另跑一次驗證。每個配置到的物件寫入唯一標籤，配置完成後逐一檢查，標籤被覆寫代表有配置重疊；全部 flush 完後，所有 bitmap 必須回到全空，否則代表有 chunk 漏掉沒回收。</li>
+              <li>壓力測試另外涵蓋 size 16 batch 128、size 2048、size 100 batch 100、local 0% 與 100%。</li>
+            </ul>
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="card">
+            <h3>固定參數</h3>
+            <div class="code">NUM_DPUS             = 1 (backend=simulator)
+NR_TASKLETS          = 16
+mallocableRegionSize = 2 MiB
+pageSize             = 4 KiB
+bufferSize           = 1 KiB
+sizeClasses          = {16, 32, 64, ..., 2048}
+ALIEN_CACHE_SIZE     = 64
+compile flags        = -O3（含 assert）</div>
+          </div>
+          <div class="card">
+            <h3>重現方式</h3>
+            <div class="code"># 建置（WSL Ubuntu）
+cd hw/script
+python3 build.py --upmem-home &lt;upmem-sdk&gt;
+
+# 執行一組設定
+hw/build/Tests/MicrobenchmarkTest/Host/Microbenchmark_test_host \
+  --thresholds 1,2,4,8,16,32,64 --repetitions 3 \
+  --rounds 8 --batch 64 --size 32 \
+  --local-percent 0 --remote-pattern scatter \
+  --raw-output raw.csv --summary-output summary.csv
+
+# 由 hw/results/ 的 CSV 產生圖片
+python hw/script/plot_results.py</div>
+          </div>
         </div>
       </div>
     </section>
@@ -572,153 +396,82 @@ Host Main
     <section class="section">
       <div class="section-header">
         <h2>實驗結果</h2>
-        <p>以下為兩輪實際執行 `Microbenchmark_test_host` 取得的時間，單位為 microseconds。</p>
-      </div>
-      <div class="content result-layout">
-        <div class="chart">
-          <h3>執行時間圖</h3>
-          <div class="legend">
-            <div><span class="dot" style="background:#7dd3fc"></span>DPU execution time</div>
-            <div><span class="dot" style="background:#34d399"></span>best observed</div>
-            <div><span class="dot" style="background:#f59e0b"></span>worst observed</div>
-          </div>
-          <div class="svg-wrap">
-            <svg viewBox="0 0 920 360" width="100%" height="auto" role="img" aria-label="threshold performance chart">
-              <defs>
-                <linearGradient id="barFill" x1="0" x2="0" y1="0" y2="1">
-                  <stop offset="0%" stop-color="#7dd3fc" stop-opacity="0.95" />
-                  <stop offset="100%" stop-color="#34d399" stop-opacity="0.85" />
-                </linearGradient>
-                <linearGradient id="bgFade" x1="0" x2="0" y1="0" y2="1">
-                  <stop offset="0%" stop-color="#0f172a" stop-opacity="0.3" />
-                  <stop offset="100%" stop-color="#0b1020" stop-opacity="0.9" />
-                </linearGradient>
-              </defs>
-              <rect x="0" y="0" width="920" height="360" fill="url(#bgFade)" />
-              <g stroke="rgba(148,163,184,0.16)" stroke-width="1">
-                <line x1="72" y1="50" x2="890" y2="50" />
-                <line x1="72" y1="110" x2="890" y2="110" />
-                <line x1="72" y1="170" x2="890" y2="170" />
-                <line x1="72" y1="230" x2="890" y2="230" />
-                <line x1="72" y1="290" x2="890" y2="290" />
-              </g>
-
-              <text x="18" y="58" fill="#a7b0d6" font-size="14">28k</text>
-              <text x="18" y="118" fill="#a7b0d6" font-size="14">26k</text>
-              <text x="18" y="178" fill="#a7b0d6" font-size="14">24k</text>
-              <text x="18" y="238" fill="#a7b0d6" font-size="14">22k</text>
-              <text x="18" y="298" fill="#a7b0d6" font-size="14">20k</text>
-
-              <g fill="url(#barFill)" stroke="#d1fae5" stroke-opacity="0.18">
-                <rect x="110" y="85.5" width="110" height="204.5" rx="14" />
-                <rect x="270" y="175.5" width="110" height="114.5" rx="14" />
-                <rect x="430" y="209.2" width="110" height="80.8" rx="14" />
-                <rect x="590" y="247.7" width="110" height="42.3" rx="14" />
-                <rect x="750" y="225.1" width="110" height="64.9" rx="14" />
-              </g>
-
-              <g fill="#eef2ff" font-size="16" font-weight="700">
-                <text x="165" y="316" text-anchor="middle">1</text>
-                <text x="325" y="316" text-anchor="middle">8</text>
-                <text x="485" y="316" text-anchor="middle">16</text>
-                <text x="645" y="316" text-anchor="middle">32</text>
-                <text x="805" y="316" text-anchor="middle">64</text>
-              </g>
-
-              <g fill="#a7b0d6" font-size="13">
-                <text x="165" y="80" text-anchor="middle">26816</text>
-                <text x="325" y="170" text-anchor="middle">23817</text>
-                <text x="485" y="204" text-anchor="middle">22695</text>
-                <text x="645" y="242" text-anchor="middle">21611</text>
-                <text x="805" y="220" text-anchor="middle">22162</text>
-              </g>
-
-              <g stroke="#94a3b8" stroke-width="1.2" fill="none" opacity="0.9">
-                <path d="M165 85.5 L325 175.5 L485 209.2 L645 247.7 L805 225.1" />
-              </g>
-              <g fill="#f59e0b" opacity="0.95">
-                <circle cx="165" cy="85.5" r="5.5" />
-              </g>
-              <g fill="#34d399" opacity="0.95">
-                <circle cx="645" cy="247.7" r="5.5" />
-              </g>
-              <g fill="#7dd3fc" opacity="0.95">
-                <circle cx="325" cy="175.5" r="5.5" />
-                <circle cx="485" cy="209.2" r="5.5" />
-                <circle cx="805" cy="225.1" r="5.5" />
-              </g>
-            </svg>
-          </div>
-          <div class="note">圖中的 bar 與折線皆為此次實測結果，數據來源為 Host benchmark 的單次執行。</div>
-        </div>
-
-        <div class="summary-list">
-          <div class="summary-item">
-            <div><span>最佳結果</span><strong>21611 us</strong></div>
-            <div>threshold = 32</div>
-          </div>
-          <div class="summary-item">
-            <div><span>最慢結果</span><strong>26816 us</strong></div>
-            <div>threshold = 1</div>
-          </div>
-          <div class="summary-item">
-            <div><span>阈值 16</span><strong>22695 us</strong></div>
-            <div>中間值</div>
-          </div>
-          <div class="summary-item">
-            <div><span>阈值 64</span><strong>22162 us</strong></div>
-            <div>略高於 32</div>
-          </div>
-          <div class="summary-item">
-            <div><span>相差幅度</span><strong>5.2%</strong></div>
-            <div>best vs worst</div>
-          </div>
-        </div>
+        <p>所有數值都是總 DPU cycles（alloc + free + drain）的中位數，越低越好。原始 CSV 在 <code>hw/results/&lt;step&gt;/</code>。</p>
       </div>
       <div class="content">
-        <table>
-          <thead>
-            <tr>
-              <th>Threshold</th>
-              <th>Execution Time (us)</th>
-              <th>Relative to Best</th>
-              <th>Observation</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr><td>1</td><td>26816</td><td>+5205</td><td>最慢，約 5.2% 高於最佳</td></tr>
-            <tr><td>8</td><td>23817</td><td>+2206</td><td>中間值</td></tr>
-            <tr><td>16</td><td>22695</td><td>+1084</td><td>略慢於 32</td></tr>
-            <tr><td>32</td><td>21611</td><td>+0</td><td>此次最佳</td></tr>
-            <tr><td>64</td><td>22162</td><td>+551</td><td>略高於 32</td></tr>
-          </tbody>
-        </table>
-        <p class="footer-note">
-          這次是單次 Host benchmark 結果。各 threshold 的差距在 0.6~5.2% 間，顯示目前 workload 下單次執行已經能看到明顯波動，但仍不足以直接斷定 32 是唯一最優值；若要更可靠，應進一步做多次重複量測並計算平均值與標準差。
-        </p>
+        <figure>
+          <img src="report_figures/fig1_step_overview.png" alt="各步驟在 threshold 1 與 64 的總 DPU cycles 長條圖，neighbor 模式，local free 50% 與 0%" />
+          <figcaption><b>圖 1　各步驟的總 cycles。</b>Step 0 → Step 1 是最大的改變（local 50%：18.67M → 3.30M；local 0%：34.35M → 3.79M）。Step 1 → Step 3 再降低 4%–19%（threshold 1 降最多，因為 Step 3 的直接釋放少讀一次 header）。Step 0 沒有 scatter 模式的數據，因為 scatter 是之後才加入的。</figcaption>
+        </figure>
+
+        <figure>
+          <img src="report_figures/fig2_baseline_threshold.png" alt="Step 0 原設計下，總 cycles 隨 threshold 增加而上升的折線圖" />
+          <figcaption><b>圖 2　原設計（Step 0）下 threshold 的影響。</b>threshold 越大越慢，64 比 1 慢 7.3%（local 50%）和 8.0%（local 0%）。原設計 flush 時每個指標仍要掃描所有 cache、各自拿鎖，批次處理沒有分攤任何成本；推測一次 flush 大量指標會讓 tasklet 集中搶鎖，因此反而變慢。</figcaption>
+        </figure>
+
+        <figure>
+          <img src="report_figures/fig3_threshold_curves.png" alt="Step 1 到 Step 3 在四種設定下的 threshold 掃描折線圖" />
+          <figcaption><b>圖 3　Step 1–3 的 threshold 掃描。</b>Step 1 中 threshold 越大越快，但超過 8 之後幾乎持平。Step 2 在 scatter 模式明顯變慢（threshold 2 時 +38%），因為排序的指令成本超過省下的拿鎖成本；另一個原因是所有 tasklet 都從 owner 0 開始拿鎖，Step 3 改成從自己的下一個 owner 開始後，scatter local 0% 在 threshold 64 從 3.78M（未提交的中間版本）降到 3.18M。Step 3 的 threshold 1 走直接釋放路徑，是四組設定中最快或接近最快的點。</figcaption>
+        </figure>
+
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th>設定 / 步驟</th><th>thr 1</th><th>thr 2</th><th>thr 4</th><th>thr 8</th><th>thr 16</th><th>thr 32</th><th>thr 64</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>neighbor 50%　Step 0</td><td>18.67M</td><td>18.95M</td><td>19.13M</td><td>19.51M</td><td>19.69M</td><td>20.01M</td><td>20.03M</td></tr>
+              <tr><td>neighbor 50%　Step 1</td><td>3.30M</td><td>3.18M</td><td>3.12M</td><td>3.09M</td><td>3.07M</td><td>3.06M</td><td>3.07M</td></tr>
+              <tr><td>neighbor 50%　Step 2</td><td>3.34M</td><td>3.19M</td><td>3.12M</td><td>3.08M</td><td>3.06M</td><td>3.05M</td><td>3.06M</td></tr>
+              <tr><td>neighbor 50%　Step 3</td><td>2.95M</td><td>3.18M</td><td>3.05M</td><td>2.99M</td><td>2.96M</td><td>2.95M</td><td class="best">2.95M</td></tr>
+              <tr><td>neighbor 0%　Step 0</td><td>34.35M</td><td>34.83M</td><td>35.26M</td><td>35.69M</td><td>36.19M</td><td>36.77M</td><td>37.11M</td></tr>
+              <tr><td>neighbor 0%　Step 1</td><td>3.79M</td><td>3.55M</td><td>3.43M</td><td>3.37M</td><td>3.34M</td><td>3.32M</td><td>3.31M</td></tr>
+              <tr><td>neighbor 0%　Step 2</td><td>3.88M</td><td>3.58M</td><td>3.43M</td><td>3.36M</td><td>3.32M</td><td>3.30M</td><td>3.29M</td></tr>
+              <tr><td>neighbor 0%　Step 3</td><td>3.06M</td><td>3.51M</td><td>3.27M</td><td>3.14M</td><td>3.08M</td><td>3.05M</td><td class="best">3.04M</td></tr>
+              <tr><td>scatter 50%　Step 1</td><td>3.30M</td><td>3.18M</td><td>3.12M</td><td>3.09M</td><td>3.07M</td><td>3.06M</td><td>3.06M</td></tr>
+              <tr><td>scatter 50%　Step 2</td><td>3.34M</td><td class="worse">3.86M</td><td>3.58M</td><td>3.49M</td><td>3.51M</td><td>3.56M</td><td>3.52M</td></tr>
+              <tr><td>scatter 50%　Step 3</td><td class="best">2.95M</td><td>3.34M</td><td>3.30M</td><td>3.28M</td><td>3.25M</td><td>3.09M</td><td>3.02M</td></tr>
+              <tr><td>scatter 0%　Step 1</td><td>3.78M</td><td>3.54M</td><td>3.42M</td><td>3.36M</td><td>3.33M</td><td>3.32M</td><td>3.31M</td></tr>
+              <tr><td>scatter 0%　Step 2</td><td>3.87M</td><td class="worse">4.90M</td><td>4.31M</td><td>4.09M</td><td>3.98M</td><td>3.98M</td><td>4.15M</td></tr>
+              <tr><td>scatter 0%　Step 3</td><td class="best">3.06M</td><td>3.84M</td><td>3.76M</td><td>3.72M</td><td>3.66M</td><td>3.34M</td><td>3.18M</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="note">綠色為 Step 3 在該設定下的最佳 threshold；紅色為 Step 2 相對 Step 1 退步最多的點。「neighbor 50%」表示 remote-pattern 為 neighbor、local free 比例 50%。</p>
+
+        <figure>
+          <img src="report_figures/fig4_step3_relative.png" alt="Step 3 各 threshold 相對 threshold 1 的 cycles 變化百分比折線圖" />
+          <figcaption><b>圖 4　Step 3 批次 flush 相對直接釋放的差異。</b>低於 0 才代表批次比較快。只有 neighbor 模式在 threshold 32–64 低於 0，最多快 0.8%。scatter 模式每個 owner 在一次 flush 裡分到的指標很少（threshold 64 時約 4 個），threshold 16 以下幾乎合併不到，所以一直比直接釋放慢。threshold 2 是最差點：每次 flush 都要付串列管理的固定成本，卻幾乎沒有合併效果。</figcaption>
+        </figure>
+
+        <figure>
+          <img src="report_figures/fig5_step3_counters.png" alt="Step 3 的 bitmap 讀改寫次數與 owner 鎖取得次數隨 threshold 變化的折線圖" />
+          <figcaption><b>圖 5　Step 3 的事件計數（local free 0%）。</b>neighbor 模式的 bitmap 讀改寫從 8192 次降到 128 次（64 倍），拿鎖次數也從 16384 次降到 8320 次（剩下的主要是 allocate 時拿自己的鎖）。即使 MRAM 存取減少這麼多，總 cycles 也只少了 0.8%，這表示在 16 個 tasklet 下，MRAM 存取並不是主要瓶頸。</figcaption>
+        </figure>
       </div>
     </section>
 
     <section class="section">
       <div class="section-header">
-        <h2>結論</h2>
-        <p>兩輪結果都顯示 alien cache flush 門檻會影響 DPU 執行時間，且在本次量測中以 32 表現最佳。</p>
+        <h2>分析與後續建議</h2>
       </div>
       <div class="content grid-2">
         <div class="card">
-          <h3>觀察</h3>
+          <h3>分析</h3>
           <ul>
-            <li>flush threshold 太低時，可能會增加 flush 次數，導致額外成本。</li>
-            <li>threshold 太高時，buffer 累積變多，成本不一定持續降低。</li>
-            <li>在這組測試條件下，`32` 是最好的平衡點。</li>
+            <li><strong>Step 1 的效益最大</strong>：原本每次 free 都要沿著串列找 page，跨執行緒 free 甚至要掃描全部 128 個 cache，每一步都是 MRAM 讀取加上一串指令。</li>
+            <li><strong>Step 1 有一處小退步</strong>：size 16 且 100% 本地 free 時慢約 6%。這時舊的串列掃描第一個 cache 就命中，新做法每次 free 多一次 8-byte header DMA。</li>
+            <li><strong>Step 3 的 threshold 1 比 Step 1 快</strong>，主要是因為 Step 1 的 alien 指標會讀兩次 header（free 時一次、flush 時一次），Step 3 重用了第一次讀到的 owner。</li>
+            <li><strong>批次處理的上限很低</strong>：最理想的 neighbor 模式省下 98% 的 bitmap 讀改寫，總時間也只少 0.8%。</li>
           </ul>
         </div>
         <div class="card">
           <h3>後續建議</h3>
           <ul>
-            <li>對每個 threshold 做多次重複量測，降低單次波動。</li>
-            <li>若要更深入分析，可把 `device_enqueued_frees`、`device_flushed_pointers`、`device_flush_cycles` 加回計數器。</li>
-            <li>把結果輸出成 CSV 再畫更完整的圖表也很適合。</li>
+            <li>在實體 UPMEM 硬體上重跑，確認模擬器的 cycle 模型（尤其是 DMA 與 mutex 的成本）與實機一致。</li>
+            <li>減少 free 路徑的指令數：DPU 沒有硬體除法器，chunk index 與 <code>assert</code> 裡的 <code>/</code>、<code>%</code> 都是軟體除法；size class 為 2 的冪時可改用位移，計時用的版本可以加 <code>-DNDEBUG</code>。</li>
+            <li>增加更接近實際應用的工作負載，例如物件跨輪存活、多種大小混合，以觀察延後回收對 page 用量的影響（size 2048 時 threshold 64 用到 432 個 page，threshold 1 只要 240 個）。</li>
+            <li>如果保留 alien cache，建議預設 threshold 1（直接釋放）；只有在確定是固定鄰居的 producer–consumer 模式時，才考慮 32–64。</li>
           </ul>
         </div>
       </div>
