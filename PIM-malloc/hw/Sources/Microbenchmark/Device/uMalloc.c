@@ -191,30 +191,90 @@ static void freeInOwnerThreadCache(struct UMalloc *uMalloc, int ownerId,
   assert(isFreed);
 }
 
+// NOTE: frees one owner's group of entries, given by order[begin, end) or by
+// [begin, end) itself when order is NULL, under a single lock acquisition
+static void freeAlienGroup(struct UMalloc *uMalloc,
+                           struct AlienCache *alienCache, int ownerId,
+                           const uint8_t *order, int begin, int end) {
+  lockOwner(uMalloc, ownerId);
+
+  for (int k = begin; k < end; k++) {
+    int i = order != NULL ? order[k] : k;
+    __mram_ptr void *pointer = alienCache->entries[i];
+
+    freeInOwnerThreadCache(uMalloc, ownerId, alienCache->sizeClassIndices[i],
+                           getThreadCachePage(uMalloc, pointer), pointer);
+  }
+
+  unlockOwner(ownerId);
+}
+
+// NOTE: entries are grouped by owner so each owner's lock is taken once per
+// flush instead of once per pointer
 static void flushAlienCache(struct UMalloc *uMalloc,
                             struct AlienCache *alienCache) {
   struct UMallocStats *stats = getStats(uMalloc);
   stats->alienFlushes++;
 
-  for (int i = 0; i < alienCache->count; i++) {
-    __mram_ptr void *pointer = alienCache->entries[i];
+  int count = alienCache->count;
+  uint32_t ownerMask = 0;
+
+  for (int i = 0; i < count; i++) {
     __mram_ptr struct ThreadCacheNode *page =
-        getThreadCachePage(uMalloc, pointer);
+        getThreadCachePage(uMalloc, alienCache->entries[i]);
 
     int ownerId;
     int sizeClassIndex;
     readThreadCacheNodeOwner(page, &ownerId, &sizeClassIndex);
     stats->cacheSearches++;
 
-    lockOwner(uMalloc, ownerId);
-    freeInOwnerThreadCache(uMalloc, ownerId, sizeClassIndex, page, pointer);
-    unlockOwner(ownerId);
-
-    alienCache->entries[i] = NULL;
-    stats->flushedPointers++;
+    alienCache->ownerIds[i] = ownerId;
+    alienCache->sizeClassIndices[i] = sizeClassIndex;
+    ownerMask |= 1u << ownerId;
   }
 
+  stats->flushedPointers += count;
   alienCache->count = 0;
+
+  // NOTE: fast path for a single owner, which skips the sort entirely
+  if ((ownerMask & (ownerMask - 1)) == 0) {
+    freeAlienGroup(uMalloc, alienCache, alienCache->ownerIds[0], NULL, 0,
+                   count);
+    return;
+  }
+
+  // NOTE: counting sort by owner
+  int ownerStarts[UMALLOC_MAX_THREADS + 1];
+
+  for (int ownerId = 0; ownerId <= UMALLOC_MAX_THREADS; ownerId++) {
+    ownerStarts[ownerId] = 0;
+  }
+
+  for (int i = 0; i < count; i++) {
+    ownerStarts[alienCache->ownerIds[i] + 1]++;
+  }
+
+  for (int ownerId = 0; ownerId < UMALLOC_MAX_THREADS; ownerId++) {
+    ownerStarts[ownerId + 1] += ownerStarts[ownerId];
+  }
+
+  // NOTE: ownerStarts[ownerId] is used as the insertion cursor, after which
+  // it equals the end of ownerId's group, i.e. the start of ownerId + 1's
+  for (int i = 0; i < count; i++) {
+    alienCache->order[ownerStarts[alienCache->ownerIds[i]]++] = i;
+  }
+
+  int groupStart = 0;
+  for (int ownerId = 0; ownerId < UMALLOC_MAX_THREADS; ownerId++) {
+    int groupEnd = ownerStarts[ownerId];
+
+    if (groupStart < groupEnd) {
+      freeAlienGroup(uMalloc, alienCache, ownerId, alienCache->order,
+                     groupStart, groupEnd);
+    }
+
+    groupStart = groupEnd;
+  }
 }
 
 static void enqueueAlienPointer(struct UMalloc *uMalloc,

@@ -14,6 +14,11 @@ struct AlienCache {
   __mram_ptr void *entries[ALIEN_CACHE_SIZE];
   int count;
   int flushThreshold;
+
+  // NOTE: flush scratch space, kept here instead of on the 1 KiB stack
+  uint8_t ownerIds[ALIEN_CACHE_SIZE];
+  uint8_t sizeClassIndices[ALIEN_CACHE_SIZE];
+  uint8_t order[ALIEN_CACHE_SIZE];
 };
 
 // NOTE: per-tasklet event counters; each tasklet only touches its own entry
