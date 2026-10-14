@@ -22,6 +22,7 @@ struct BenchmarkConfig {
   int batchSize;
   int numRounds;
   int localFreePercent;
+  int remotePattern;
 };
 
 static void checkDpu(dpu_error_t error, const char *what) {
@@ -49,6 +50,7 @@ static struct BenchmarkResult runBenchmark(struct dpu_set_t dpuSet,
   copyIntToDpu(dpuSet, "batchSize", config->batchSize);
   copyIntToDpu(dpuSet, "numRounds", config->numRounds);
   copyIntToDpu(dpuSet, "localFreePercent", config->localFreePercent);
+  copyIntToDpu(dpuSet, "remotePattern", config->remotePattern);
   copyIntToDpu(dpuSet, "validate", validate);
 
   dpu_error_t error = dpu_launch(dpuSet, DPU_SYNCHRONOUS);
@@ -114,10 +116,11 @@ static void usage(const char *program) {
   fprintf(stderr,
           "Usage: %s [--thresholds LIST] [--repetitions N] [--rounds N]\n"
           "          [--batch N] [--size BYTES] [--local-percent P]\n"
+          "          [--remote-pattern neighbor|scatter]\n"
           "          [--skip-validation] [--raw-output PATH]\n"
           "          [--summary-output PATH]\n"
           "Defaults: --thresholds %s --repetitions %d --rounds 8 --batch 64\n"
-          "          --size 32 --local-percent 50\n",
+          "          --size 32 --local-percent 50 --remote-pattern neighbor\n",
           program, DEFAULT_THRESHOLDS, DEFAULT_REPETITIONS);
 }
 
@@ -130,6 +133,7 @@ int main(int argc, char **argv) {
       .batchSize = 64,
       .numRounds = 8,
       .localFreePercent = 50,
+      .remotePattern = 0,
   };
 
   int thresholds[MAX_THRESHOLDS];
@@ -154,6 +158,16 @@ int main(int argc, char **argv) {
       config.allocSize = parseInt(argv[++i], "size", 8, 2048);
     } else if (strcmp(argv[i], "--local-percent") == 0 && hasValue) {
       config.localFreePercent = parseInt(argv[++i], "local-percent", 0, 100);
+    } else if (strcmp(argv[i], "--remote-pattern") == 0 && hasValue) {
+      const char *pattern = argv[++i];
+      if (strcmp(pattern, "neighbor") == 0) {
+        config.remotePattern = 0;
+      } else if (strcmp(pattern, "scatter") == 0) {
+        config.remotePattern = 1;
+      } else {
+        fprintf(stderr, "Invalid remote-pattern: %s\n", pattern);
+        return EXIT_FAILURE;
+      }
     } else if (strcmp(argv[i], "--skip-validation") == 0) {
       skipValidation = 1;
     } else if (strcmp(argv[i], "--raw-output") == 0 && hasValue) {
@@ -185,10 +199,11 @@ int main(int argc, char **argv) {
           "alien_flushes,owner_lock_acquires,cache_searches,pages,"
           "validation\n");
 
-  printf("config: size=%d batch=%d rounds=%d local=%d%% tasklets=16 "
-         "repetitions=%d\n",
+  printf("config: size=%d batch=%d rounds=%d local=%d%% remote=%s "
+         "tasklets=16 repetitions=%d\n",
          config.allocSize, config.batchSize, config.numRounds,
-         config.localFreePercent, repetitions);
+         config.localFreePercent,
+         config.remotePattern ? "scatter" : "neighbor", repetitions);
   printf("%9s %12s %12s %12s %12s %8s %10s %10s %6s %s\n", "threshold",
          "median_cyc", "alloc_cyc", "free_cyc", "drain_cyc", "flushes",
          "lock_acq", "searches", "pages", "validation");

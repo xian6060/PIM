@@ -25,12 +25,21 @@ __host int allocSize;
 __host int batchSize;
 __host int numRounds;
 __host int localFreePercent;
+__host int remotePattern;
 __host int validate;
+
+// NOTE: who frees the remote part of a batch
+//   neighbor: pointer i of tasklet t is freed by tasklet t - 1
+//   scatter:  pointer i of tasklet t is freed by tasklet t - 1 - i % 15, so
+//             each tasklet frees pointers owned by all 15 other tasklets
+#define REMOTE_PATTERN_NEIGHBOR 0
+#define REMOTE_PATTERN_SCATTER 1
 
 __host struct BenchmarkResult result;
 
 struct UMalloc *uMalloc;
 __mram_ptr void *sharedPointers[NR_TASKLETS][MAX_BATCH_SIZE];
+uint8_t scatterVictims[NR_TASKLETS][MAX_BATCH_SIZE];
 uint32_t validationErrors[NR_TASKLETS];
 
 BARRIER_INIT(deviceBarrier, NR_TASKLETS);
@@ -86,6 +95,8 @@ int main() {
     assert(0 < batchSize && batchSize <= MAX_BATCH_SIZE);
     assert(0 <= localFreePercent && localFreePercent <= 100);
     assert(allocSize >= 8);
+    assert(remotePattern == REMOTE_PATTERN_NEIGHBOR ||
+           remotePattern == REMOTE_PATTERN_SCATTER);
 
     int sizeClasses[8] = {16, 32, 64, 128, 256, 512, 1024, 2048};
     int sizeClassesLength = 8;
@@ -97,10 +108,18 @@ int main() {
     perfcounter_config(COUNT_CYCLES, true);
   }
   validationErrors[threadId] = 0;
+
+  // NOTE: precomputed before timing starts so the timed loop avoids the
+  // DPU's software modulo
+  for (int i = 0; i < MAX_BATCH_SIZE; i++) {
+    scatterVictims[threadId][i] =
+        (threadId + 1 + i % (NR_TASKLETS - 1)) % NR_TASKLETS;
+  }
   barrier_wait(&deviceBarrier);
 
   // NOTE: the first numLocalFrees pointers of every batch are freed by their
-  // owner, the rest by the previous tasklet, so each pointer is freed once
+  // owner and the rest by another tasklet (see remotePattern), so each
+  // pointer is freed exactly once
   int numLocalFrees = batchSize * localFreePercent / 100;
   int victimThreadId = (threadId + 1) % NR_TASKLETS;
 
@@ -145,11 +164,22 @@ int main() {
       phaseStart = perfcounter_get();
     }
 
-    for (int i = 0; i < batchSize; i++) {
-      if (i < numLocalFrees) {
-        freeUMalloc(uMalloc, sharedPointers[threadId][i]);
-      } else {
-        freeUMalloc(uMalloc, sharedPointers[victimThreadId][i]);
+    if (remotePattern == REMOTE_PATTERN_SCATTER) {
+      for (int i = 0; i < batchSize; i++) {
+        if (i < numLocalFrees) {
+          freeUMalloc(uMalloc, sharedPointers[threadId][i]);
+        } else {
+          freeUMalloc(uMalloc,
+                      sharedPointers[scatterVictims[threadId][i]][i]);
+        }
+      }
+    } else {
+      for (int i = 0; i < batchSize; i++) {
+        if (i < numLocalFrees) {
+          freeUMalloc(uMalloc, sharedPointers[threadId][i]);
+        } else {
+          freeUMalloc(uMalloc, sharedPointers[victimThreadId][i]);
+        }
       }
     }
     barrier_wait(&deviceBarrier);
