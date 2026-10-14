@@ -23,7 +23,6 @@ STEPS = [
     ("step0_baseline", "Step 0\n原設計\n（已修 bug）"),
     ("step1_owner_lookup", "Step 1\nO(1)\n查 owner"),
     ("step2_owner_batching", "Step 2\n每 owner\n拿一次鎖"),
-    ("step3_page_merge", "Step 3\n合併同頁\nbitmap"),
 ]
 THRESHOLDS = [1, 2, 4, 8, 16, 32, 64]
 
@@ -173,66 +172,45 @@ def plot_threshold_curves():
         ax.set_ylabel("總 DPU cycles")
 
     handles, labels = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=3,
+    fig.legend(handles, labels, loc="upper center", ncol=2,
                bbox_to_anchor=(0.5, 1.03))
     fig.tight_layout()
     save(fig, "fig3_threshold_curves.png")
 
 
-def plot_step3_relative():
-    fig, ax = plt.subplots(figsize=(11, 4.2))
+def plot_relative():
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2), sharey=True)
     configs = [("neighbor", 50), ("neighbor", 0), ("scatter", 50),
                ("scatter", 0)]
 
-    ax.axhline(0, color=BASELINE, linewidth=1)
-    for (pattern, local), color, marker in zip(configs, SERIES, MARKERS):
-        rows = read_summary("step3_page_merge", local, pattern)
-        base = cycles(rows, 1)
-        values = [(cycles(rows, t) / base - 1) * 100 for t in THRESHOLDS]
-        ax.plot(THRESHOLDS, values, color=color, marker=marker,
-                label=f"{pattern}，local {local}%")
-
-    ax.set_xscale("log", base=2)
-    ax.set_xticks(THRESHOLDS)
-    ax.set_xticklabels([str(t) for t in THRESHOLDS])
-    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:+.0f}%"))
-    ax.set_xlabel("alien cache flush threshold")
-    ax.set_ylabel("相對 threshold 1 的 cycles 變化")
-    ax.set_title("Step 3：批次 flush 相對直接釋放（threshold 1）的差異，"
-                 "低於 0 代表批次較快", loc="left")
-    ax.legend(loc="upper right", ncol=2)
-    style_axes(ax)
-    save(fig, "fig4_step3_relative.png")
-
-
-def plot_step3_counters():
-    fig, axes = plt.subplots(1, 2, figsize=(11, 3.8), sharex=True)
-    counters = [("bitmap_updates", "bitmap 讀改寫次數"),
-                ("owner_lock_acquires", "owner 鎖取得次數")]
-
-    for ax, (column, title) in zip(axes, counters):
-        for pattern, color, marker in zip(("neighbor", "scatter"), SERIES,
-                                          MARKERS):
-            rows = read_summary("step3_page_merge", 0, pattern)
-            values = [int(rows[t][column]) for t in THRESHOLDS]
+    for ax, (step, label) in zip(axes, STEPS[1:]):
+        ax.axhline(0, color=BASELINE, linewidth=1)
+        for (pattern, local), color, marker in zip(configs, SERIES, MARKERS):
+            rows = read_summary(step, local, pattern)
+            base = cycles(rows, 1)
+            values = [(cycles(rows, t) / base - 1) * 100 for t in THRESHOLDS]
             ax.plot(THRESHOLDS, values, color=color, marker=marker,
-                    label=pattern)
+                    label=f"{pattern}，local {local}%")
 
         ax.set_xscale("log", base=2)
         ax.set_xticks(THRESHOLDS)
         ax.set_xticklabels([str(t) for t in THRESHOLDS])
-        ax.set_ylim(bottom=0)
+        ax.yaxis.set_major_formatter(
+            FuncFormatter(lambda v, _: f"{v:+.0f}%"))
         ax.set_xlabel("alien cache flush threshold")
-        ax.set_title(f"Step 3，local free 0%：{title}", loc="left")
+        ax.set_title(label.replace("\n", " "), loc="left")
         style_axes(ax)
 
-    axes[0].legend(loc="upper right")
-    save(fig, "fig5_step3_counters.png")
+    axes[0].set_ylabel("相對 threshold 1 的 cycles 變化（低於 0 代表較快）")
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=4,
+               bbox_to_anchor=(0.5, 1.06))
+    fig.tight_layout()
+    save(fig, "fig4_threshold_relative.png")
 
 
 if __name__ == "__main__":
     plot_step_overview()
     plot_baseline()
     plot_threshold_curves()
-    plot_step3_relative()
-    plot_step3_counters()
+    plot_relative()
