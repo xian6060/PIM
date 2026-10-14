@@ -240,6 +240,7 @@
             <li>在原本的設計下，<strong>threshold 越大越慢</strong>（64 比 1 慢 7–8%），因為批次 flush 沒有分攤任何成本。</li>
             <li>第 3 步之後批次處理才真正省下 MRAM 存取（bitmap 讀改寫最多減少 64 倍），但<strong>總時間只在 neighbor 模式快 0.2–0.8%，scatter 模式反而慢 2–4%</strong>。</li>
             <li>因此在這個環境下，<strong>threshold 32 不是最佳值</strong>。直接釋放（threshold 1）在每組設定都是最快或接近最快。</li>
+            <li>第 3 步的程式碼<strong>已撤銷</strong>（<code class="hash">4303801</code>），目前分支上的程式等同第 2 步；第 3 步的量測資料與本報告的分析保留作為紀錄。</li>
           </ul>
         </div>
         <div class="card caution">
@@ -328,6 +329,10 @@
           <div class="step"><b class="skip">4</b><div>
             <strong>批次 buddy free：跳過</strong><br/>
             第 1 步之後，大區塊在 free 時就直接交給 buddy allocator，不會進 alien cache；所有量測中 alien 路徑的 <code>buddy_frees</code> 都是 0，沒有東西可以批次處理。
+          </div></div>
+          <div class="step"><b class="skip">↩</b><div>
+            <strong>撤銷第 3 步的程式碼</strong>（<code class="hash">4303801</code>）<br/>
+            用 <code>git revert</code> 撤銷 <code class="hash">6fc5e1f</code> 的程式變動，allocator 與 benchmark 回到第 2 步；<code>hw/results/step3_page_merge/</code> 的量測資料保留。撤銷後重新編譯，stress 驗證全部通過，neighbor、local 0% 的 cycles 與第 2 步紀錄完全相同。原因：第 3 步省下最多 64 倍的 bitmap 讀改寫，總時間卻只在 neighbor 快 0.2–0.8%，scatter 反而慢 2–4%，增加的程式複雜度不划算。需要時可用 <code>git revert 4303801</code> 恢復。
           </div></div>
         </div>
       </div>
