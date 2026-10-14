@@ -7,6 +7,15 @@
 #include "BuddyAllocator.h"
 #include "Microbenchmark/Device/BuddyAllocator.h"
 
+// NOTE: page header layout in MRAM (32 bytes, multiple of 8 for DMA)
+//   [0, 8)   prev, next
+//   [8, 24)  128-bit allocation bitmap (1 = free)
+//   [24, 32) ownerId, sizeClassIndex
+// Pages come from the buddy allocator and are pageSize-aligned relative to
+// its region base, so any chunk pointer maps to its header in O(1)
+#define THREAD_CACHE_HEADER_SIZE 32
+#define THREAD_CACHE_OWNER_OFFSET 24
+
 struct ThreadCache;
 struct ThreadCacheNode;
 
@@ -14,6 +23,8 @@ struct ThreadCache {
   struct BuddyAllocator* buddyAllocator;
   int sizeClass;
   int pageSize;
+  int ownerId;
+  int sizeClassIndex;
   __mram_ptr struct ThreadCacheNode* root;
 };
 
@@ -28,7 +39,8 @@ struct ThreadCacheNode {
 };
 
 struct ThreadCache* initThreadCache(struct BuddyAllocator* buddyAllocator,
-                                    int sizeClass, int pageSize);
+                                    int sizeClass, int pageSize, int ownerId,
+                                    int sizeClassIndex);
 void finiThreadCache(struct ThreadCache* threadCache);
 
 __mram_ptr void* allocateThreadCache(struct ThreadCache* threadCache);
@@ -62,6 +74,9 @@ __mram_ptr void* getThreadCachePointer(struct ThreadCache* threadCache,
 int getThreadCacheChunkIndex(struct ThreadCache* threadCache,
                              __mram_ptr struct ThreadCacheNode* node,
                              __mram_ptr void* pointer);
+
+void readThreadCacheNodeOwner(__mram_ptr struct ThreadCacheNode* node,
+                              int* ownerId, int* sizeClassIndex);
 
 int countThreadCachePages(struct ThreadCache* threadCache);
 int countThreadCacheAllocatedChunks(struct ThreadCache* threadCache);

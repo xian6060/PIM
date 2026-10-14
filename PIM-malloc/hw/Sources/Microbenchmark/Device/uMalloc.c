@@ -162,40 +162,33 @@ static struct ThreadCache **getThreadCachesByThreadId(struct UMalloc *uMalloc,
   }
 }
 
-// NOTE: the caller must hold the lock of the owner of threadCaches
-static int tryFreeInThreadCaches(struct UMalloc *uMalloc,
-                                 struct ThreadCache **threadCaches,
-                                 __mram_ptr void *pointer) {
-  for (int i = 0; i < uMalloc->sizeClassesLength; i++) {
-    getStats(uMalloc)->cacheSearches++;
+// NOTE: thread cache pages are pageSize-aligned relative to the buddy region
+// base and chunks start after the page header, so a page-aligned pointer is
+// a block that came straight from the buddy allocator
+static __mram_ptr struct ThreadCacheNode *getThreadCachePage(
+    struct UMalloc *uMalloc, __mram_ptr void *pointer) {
+  __mram_ptr void *regionBase =
+      uMalloc->buddyAllocator->mramMallocableRegionBase;
+  int offset = pointer - regionBase;
+  int pageOffset = offset & ~(uMalloc->pageSize - 1);
 
-    if (freeThreadCache(threadCaches[i], pointer)) {
-      return 1;
-    }
+  if (pageOffset == offset) {
+    return NULL;
   }
 
-  return 0;
+  return (__mram_ptr struct ThreadCacheNode *)(regionBase + pageOffset);
 }
 
-static int tryFreeInOwnerThreadCaches(struct UMalloc *uMalloc, int ownerId,
-                                      __mram_ptr void *pointer) {
-  lockOwner(uMalloc, ownerId);
-  int isFreed = tryFreeInThreadCaches(
-      uMalloc, getThreadCachesByThreadId(uMalloc, ownerId), pointer);
-  unlockOwner(ownerId);
+// NOTE: the caller must hold the lock of ownerId
+static void freeInOwnerThreadCache(struct UMalloc *uMalloc, int ownerId,
+                                   int sizeClassIndex,
+                                   __mram_ptr struct ThreadCacheNode *page,
+                                   __mram_ptr void *pointer) {
+  struct ThreadCache *threadCache =
+      getThreadCachesByThreadId(uMalloc, ownerId)[sizeClassIndex];
 
-  return isFreed;
-}
-
-static int tryFreeInAllThreadCaches(struct UMalloc *uMalloc,
-                                    __mram_ptr void *pointer) {
-  for (int threadId = 0; threadId < UMALLOC_MAX_THREADS; threadId++) {
-    if (tryFreeInOwnerThreadCaches(uMalloc, threadId, pointer)) {
-      return 1;
-    }
-  }
-
-  return 0;
+  int isFreed = freeThreadCacheNode(threadCache, page, pointer);
+  assert(isFreed);
 }
 
 static void flushAlienCache(struct UMalloc *uMalloc,
@@ -205,11 +198,17 @@ static void flushAlienCache(struct UMalloc *uMalloc,
 
   for (int i = 0; i < alienCache->count; i++) {
     __mram_ptr void *pointer = alienCache->entries[i];
+    __mram_ptr struct ThreadCacheNode *page =
+        getThreadCachePage(uMalloc, pointer);
 
-    if (!tryFreeInAllThreadCaches(uMalloc, pointer)) {
-      buddyFree(uMalloc->buddyAllocator, pointer);
-      stats->buddyFrees++;
-    }
+    int ownerId;
+    int sizeClassIndex;
+    readThreadCacheNodeOwner(page, &ownerId, &sizeClassIndex);
+    stats->cacheSearches++;
+
+    lockOwner(uMalloc, ownerId);
+    freeInOwnerThreadCache(uMalloc, ownerId, sizeClassIndex, page, pointer);
+    unlockOwner(ownerId);
 
     alienCache->entries[i] = NULL;
     stats->flushedPointers++;
@@ -329,38 +328,38 @@ struct UMalloc *initUMalloc(int mallocableRegionSize, int pageSize,
   memset(uMalloc->stats, 0, UMALLOC_MAX_THREADS * sizeof(struct UMallocStats));
 
   for (int i = 0; i < sizeClassesLength; i++) {
-    uMalloc->threadCaches0[i] =
-        initThreadCache(uMalloc->buddyAllocator, sizeClasses[i], pageSize);
-    uMalloc->threadCaches1[i] =
-        initThreadCache(uMalloc->buddyAllocator, sizeClasses[i], pageSize);
-    uMalloc->threadCaches2[i] =
-        initThreadCache(uMalloc->buddyAllocator, sizeClasses[i], pageSize);
-    uMalloc->threadCaches3[i] =
-        initThreadCache(uMalloc->buddyAllocator, sizeClasses[i], pageSize);
-    uMalloc->threadCaches4[i] =
-        initThreadCache(uMalloc->buddyAllocator, sizeClasses[i], pageSize);
-    uMalloc->threadCaches5[i] =
-        initThreadCache(uMalloc->buddyAllocator, sizeClasses[i], pageSize);
-    uMalloc->threadCaches6[i] =
-        initThreadCache(uMalloc->buddyAllocator, sizeClasses[i], pageSize);
-    uMalloc->threadCaches7[i] =
-        initThreadCache(uMalloc->buddyAllocator, sizeClasses[i], pageSize);
-    uMalloc->threadCaches8[i] =
-        initThreadCache(uMalloc->buddyAllocator, sizeClasses[i], pageSize);
-    uMalloc->threadCaches9[i] =
-        initThreadCache(uMalloc->buddyAllocator, sizeClasses[i], pageSize);
-    uMalloc->threadCaches10[i] =
-        initThreadCache(uMalloc->buddyAllocator, sizeClasses[i], pageSize);
-    uMalloc->threadCaches11[i] =
-        initThreadCache(uMalloc->buddyAllocator, sizeClasses[i], pageSize);
-    uMalloc->threadCaches12[i] =
-        initThreadCache(uMalloc->buddyAllocator, sizeClasses[i], pageSize);
-    uMalloc->threadCaches13[i] =
-        initThreadCache(uMalloc->buddyAllocator, sizeClasses[i], pageSize);
-    uMalloc->threadCaches14[i] =
-        initThreadCache(uMalloc->buddyAllocator, sizeClasses[i], pageSize);
-    uMalloc->threadCaches15[i] =
-        initThreadCache(uMalloc->buddyAllocator, sizeClasses[i], pageSize);
+    uMalloc->threadCaches0[i] = initThreadCache(
+        uMalloc->buddyAllocator, sizeClasses[i], pageSize, 0, i);
+    uMalloc->threadCaches1[i] = initThreadCache(
+        uMalloc->buddyAllocator, sizeClasses[i], pageSize, 1, i);
+    uMalloc->threadCaches2[i] = initThreadCache(
+        uMalloc->buddyAllocator, sizeClasses[i], pageSize, 2, i);
+    uMalloc->threadCaches3[i] = initThreadCache(
+        uMalloc->buddyAllocator, sizeClasses[i], pageSize, 3, i);
+    uMalloc->threadCaches4[i] = initThreadCache(
+        uMalloc->buddyAllocator, sizeClasses[i], pageSize, 4, i);
+    uMalloc->threadCaches5[i] = initThreadCache(
+        uMalloc->buddyAllocator, sizeClasses[i], pageSize, 5, i);
+    uMalloc->threadCaches6[i] = initThreadCache(
+        uMalloc->buddyAllocator, sizeClasses[i], pageSize, 6, i);
+    uMalloc->threadCaches7[i] = initThreadCache(
+        uMalloc->buddyAllocator, sizeClasses[i], pageSize, 7, i);
+    uMalloc->threadCaches8[i] = initThreadCache(
+        uMalloc->buddyAllocator, sizeClasses[i], pageSize, 8, i);
+    uMalloc->threadCaches9[i] = initThreadCache(
+        uMalloc->buddyAllocator, sizeClasses[i], pageSize, 9, i);
+    uMalloc->threadCaches10[i] = initThreadCache(
+        uMalloc->buddyAllocator, sizeClasses[i], pageSize, 10, i);
+    uMalloc->threadCaches11[i] = initThreadCache(
+        uMalloc->buddyAllocator, sizeClasses[i], pageSize, 11, i);
+    uMalloc->threadCaches12[i] = initThreadCache(
+        uMalloc->buddyAllocator, sizeClasses[i], pageSize, 12, i);
+    uMalloc->threadCaches13[i] = initThreadCache(
+        uMalloc->buddyAllocator, sizeClasses[i], pageSize, 13, i);
+    uMalloc->threadCaches14[i] = initThreadCache(
+        uMalloc->buddyAllocator, sizeClasses[i], pageSize, 14, i);
+    uMalloc->threadCaches15[i] = initThreadCache(
+        uMalloc->buddyAllocator, sizeClasses[i], pageSize, 15, i);
   }
 
   return uMalloc;
@@ -425,10 +424,28 @@ __mram_ptr void *allocateUMalloc(struct UMalloc *uMalloc, int size) {
 }
 
 void freeUMalloc(struct UMalloc *uMalloc, __mram_ptr void *pointer) {
-  int threadId = me();
+  struct UMallocStats *stats = getStats(uMalloc);
+  __mram_ptr struct ThreadCacheNode *page =
+      getThreadCachePage(uMalloc, pointer);
 
-  if (tryFreeInOwnerThreadCaches(uMalloc, threadId, pointer)) {
-    getStats(uMalloc)->localFrees++;
+  if (page == NULL) {
+    buddyFree(uMalloc->buddyAllocator, pointer);
+    stats->buddyFrees++;
+    return;
+  }
+
+  int ownerId;
+  int sizeClassIndex;
+  readThreadCacheNodeOwner(page, &ownerId, &sizeClassIndex);
+  stats->cacheSearches++;
+
+  int threadId = me();
+  if (ownerId == threadId) {
+    lockOwner(uMalloc, threadId);
+    freeInOwnerThreadCache(uMalloc, threadId, sizeClassIndex, page, pointer);
+    unlockOwner(threadId);
+
+    stats->localFrees++;
     return;
   }
 

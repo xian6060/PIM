@@ -23,7 +23,7 @@ struct UMallocStats {
   uint32_t alienFlushes;       // alien cache flush events
   uint32_t flushedPointers;    // pointers drained by alien cache flushes
   uint32_t ownerLockAcquires;  // per-owner thread cache lock acquisitions
-  uint32_t cacheSearches;      // thread caches searched for a pointer
+  uint32_t cacheSearches;      // page header reads to locate a pointer
   uint32_t buddyFrees;         // pointers handed back to the buddy allocator
   uint32_t reserved;
 };
