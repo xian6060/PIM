@@ -25,7 +25,8 @@ struct UMallocStats {
   uint32_t ownerLockAcquires;  // per-owner thread cache lock acquisitions
   uint32_t cacheSearches;      // page header reads to locate a pointer
   uint32_t buddyFrees;         // pointers handed back to the buddy allocator
-  uint32_t reserved;
+  uint32_t directRemoteFrees;  // remote pointers freed under the owner lock
+                               // without the alien cache (threshold 0)
 };
 
 struct UMalloc {
@@ -35,6 +36,10 @@ struct UMalloc {
   int sizeClassesLength;
 
   int pageSize;
+
+  // NOTE: 0 frees remote pointers directly under the owner lock and leaves
+  // the alien caches unused
+  int alienFlushThreshold;
 
   struct ThreadCache **threadCaches0;
   struct ThreadCache **threadCaches1;
