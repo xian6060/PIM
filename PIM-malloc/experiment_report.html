@@ -200,14 +200,14 @@
         <p class="lede">
           本報告記錄 alien cache 的三個改良步驟：修正 bug、O(1) 查 owner、每個 owner 只拿一次鎖。
           每一步都用重寫後的 benchmark 掃描 flush threshold 1 到 64，以 DPU cycles 作為指標。
-          程式碼在 <code>alien-cache-opt</code> 分支，每一步各一個 commit。
+          程式碼在 <code>alien-cache-opt</code> 分支，每一步各一個 commit；第 2 步在每組設定都比直接釋放慢，已經撤回，目前的程式是第 1 步。
         </p>
       </div>
       <div class="hero-grid">
         <div class="metric">
           <div class="label">總加速</div>
           <div class="value">6.1× – 10.4×</div>
-          <div class="desc">Step 0 threshold 1 → Step 2 threshold 64，neighbor 模式</div>
+          <div class="desc">Step 0 threshold 1 → Step 1 threshold 64（目前的程式），neighbor 模式</div>
         </div>
         <div class="metric">
           <div class="label">主要來源</div>
@@ -215,9 +215,9 @@
           <div class="desc">Step 1 單獨就帶來 5.7× – 9.1×</div>
         </div>
         <div class="metric">
-          <div class="label">批次 flush 的效益</div>
-          <div class="value">−15% – +7%</div>
-          <div class="desc">Step 2 threshold 64 相對 threshold 1：neighbor 較快，scatter 較慢</div>
+          <div class="label">相對直接釋放</div>
+          <div class="value">+3.8% – +8.3%</div>
+          <div class="desc">Step 1 最佳 threshold 仍比不經 alien cache、直接拿鎖釋放慢</div>
         </div>
         <div class="metric">
           <div class="label">正確性驗證</div>
@@ -238,9 +238,10 @@
           <ul>
             <li>效能提升幾乎都來自<strong>修正 bug 與第 1 步</strong>：free 不再掃描所有 thread cache 的串列，總 cycles 從 18.7M / 34.3M 降到約 3.3M / 3.8M。</li>
             <li>在原本的設計下，<strong>threshold 越大越慢</strong>（64 比 1 慢 7–8%），因為批次 flush 沒有分攤任何成本。</li>
-            <li>第 1 步之後趨勢反轉：<strong>threshold 32–64 最快</strong>，比 threshold 1 快 7%（local 50%）到 13%（local 0%），neighbor 與 scatter 都一樣；超過 8 之後幾乎持平。</li>
-            <li>第 2 步（目前的程式）在 neighbor 模式維持這個趨勢，threshold 64 比 1 快 8.6–15%；但在 <strong>scatter 模式 threshold ≥ 2 全部比 threshold 1 慢</strong>（3–27%），threshold 2 時甚至比第 1 步慢 38%。</li>
-            <li>因此 threshold 32–64 是否最佳取決於實作與工作負載：第 1 步的實作在四組設定下都是 32–64 最佳；第 2 步只有 neighbor 模式成立。</li>
+            <li>第 1 步（目前的程式）之後趨勢反轉：<strong>threshold 32–64 最快</strong>，比 threshold 1 快 7%（local 50%）到 13%（local 0%），neighbor 與 scatter 都一樣；超過 8 之後幾乎持平。</li>
+            <li>第 2 步在 neighbor 模式維持這個趨勢，threshold 64 比 1 快 8.6–15%；但在 <strong>scatter 模式 threshold ≥ 2 全部比 threshold 1 慢</strong>（3–27%），threshold 2 時甚至比第 1 步慢 38%。</li>
+            <li>但 threshold 1 本身也要經過 alien cache。和<strong>不經 alien cache、直接拿 owner 的鎖釋放</strong>相比，第 1 步的最佳 threshold 仍慢 3.8–8.3%，第 2 步慢 3.5–27%；批次 flush 省下的主要是 alien cache 自己加上的成本。</li>
+            <li>第 2 步在每組設定都比直接釋放慢，和第 1 步相比最多只快 0.6%、最多慢 38%，因此<strong>已撤回</strong>，程式回到第 1 步。</li>
           </ul>
         </div>
         <div class="card caution">
@@ -318,9 +319,10 @@
             <strong>benchmark 加入 scatter 模式</strong>（<code class="hash">28a79a9</code>）<br/>
             原本每個 tasklet 只釋放鄰居的指標，alien cache 裡永遠只有一個 owner，「依 owner 分組」顯示不出效果。scatter 模式讓每個 tasklet 釋放其他 15 個 tasklet 的指標。第 1 步用同一個 binary 重新量測，讓之後每一步都用同一個 benchmark 比較。
           </div></div>
-          <div class="step"><b>2</b><div>
-            <strong>每次 flush 對每個 owner 只拿一次鎖</strong>（<code class="hash">1809a90</code>）<br/>
+          <div class="step"><b class="skip">2</b><div>
+            <strong>每次 flush 對每個 owner 只拿一次鎖：已撤回</strong>（<code class="hash">1809a90</code>，撤回於 <code class="hash">abd14d0</code>）<br/>
             flush 時先讀出每個指標的 owner，用 counting sort 依 owner 分組，每組只拿一次鎖；整批只有一個 owner 時跳過排序。沒有採用「owner 自己來收」的 MRAM 收件匣，因為每個指標要多一次 DMA 寫入與讀取。
+            實驗後發現它在 scatter 模式比第 1 步慢最多 38%，neighbor 模式最多只快 0.6%，而且四組設定都比直接釋放慢，所以把 <code>uMalloc.c</code>、<code>uMalloc.h</code> 還原到第 1 步。還原後重新編譯、壓力測試通過，重跑的 cycles 與 <code>hw/results/step1_owner_lookup/</code> 完全相同；第 2 步的量測資料保留在 <code>hw/results/step2_owner_batching/</code>。
           </div></div>
           <div class="step"><b class="skip">4</b><div>
             <strong>批次 buddy free：跳過</strong><br/>
@@ -398,7 +400,7 @@ python hw/script/plot_results.py</div>
       <div class="content">
         <figure>
           <img src="report_figures/fig1_step_overview.png" alt="各步驟在 threshold 1 與 64 的總 DPU cycles 長條圖，neighbor 模式，local free 50% 與 0%" />
-          <figcaption><b>圖 1　各步驟的總 cycles。</b>Step 0 → Step 1 是最大的改變（local 50%：18.67M → 3.30M；local 0%：34.35M → 3.79M）。Step 1 → Step 2 在 neighbor 模式差異很小：threshold 64 快 0.3–0.6%，threshold 1 反而慢 1.3–2.3%（多了分組的判斷）。Step 0 沒有 scatter 模式的數據，因為 scatter 是之後才加入的。</figcaption>
+          <figcaption><b>圖 1　各步驟的總 cycles。</b>Step 0 → Step 1 是最大的改變（local 50%：18.67M → 3.30M；local 0%：34.35M → 3.79M）。Step 1 → Step 2（已撤回）在 neighbor 模式差異很小：threshold 64 快 0.3–0.6%，threshold 1 反而慢 1.3–2.3%（多了分組的判斷）。Step 0 沒有 scatter 模式的數據，因為 scatter 是之後才加入的。</figcaption>
         </figure>
 
         <figure>
@@ -408,7 +410,7 @@ python hw/script/plot_results.py</div>
 
         <figure>
           <img src="report_figures/fig3_threshold_curves.png" alt="Step 1 與 Step 2 在四種設定下的 threshold 掃描折線圖" />
-          <figcaption><b>圖 3　Step 1–2 的 threshold 掃描。</b>Step 1 中 threshold 越大越快，但超過 8 之後幾乎持平。Step 2 在 neighbor 模式和 Step 1 幾乎重疊，在 scatter 模式則明顯變慢（local 0%、threshold 2 時 +38%）。推測原因有二：scatter 時一次 flush 分散到很多 owner，counting sort 的指令成本超過省下的拿鎖成本；而且每個 tasklet 都從 owner 0 開始依序拿鎖，容易在同一把鎖上排隊。</figcaption>
+          <figcaption><b>圖 3　Step 1–2 的 threshold 掃描。</b>Step 2 已撤回，留在圖中作為紀錄。Step 1 中 threshold 越大越快，但超過 8 之後幾乎持平。Step 2 在 neighbor 模式和 Step 1 幾乎重疊，在 scatter 模式則明顯變慢（local 0%、threshold 2 時 +38%）。推測原因有二：scatter 時一次 flush 分散到很多 owner，counting sort 的指令成本超過省下的拿鎖成本；而且每個 tasklet 都從 owner 0 開始依序拿鎖，容易在同一把鎖上排隊。</figcaption>
         </figure>
 
         <div class="table-scroll">
@@ -418,24 +420,39 @@ python hw/script/plot_results.py</div>
             </thead>
             <tbody>
               <tr><td>neighbor 50%　Step 0</td><td>18.67M</td><td>18.95M</td><td>19.13M</td><td>19.51M</td><td>19.69M</td><td>20.01M</td><td>20.03M</td></tr>
-              <tr><td>neighbor 50%　Step 1</td><td>3.30M</td><td>3.18M</td><td>3.12M</td><td>3.09M</td><td>3.07M</td><td>3.06M</td><td>3.07M</td></tr>
-              <tr><td>neighbor 50%　Step 2</td><td>3.34M</td><td>3.19M</td><td>3.12M</td><td>3.08M</td><td>3.06M</td><td class="best">3.05M</td><td>3.06M</td></tr>
+              <tr><td>neighbor 50%　Step 1</td><td>3.30M</td><td>3.18M</td><td>3.12M</td><td>3.09M</td><td>3.07M</td><td class="best">3.06M</td><td>3.07M</td></tr>
+              <tr><td>neighbor 50%　Step 2</td><td>3.34M</td><td>3.19M</td><td>3.12M</td><td>3.08M</td><td>3.06M</td><td>3.05M</td><td>3.06M</td></tr>
               <tr><td>neighbor 0%　Step 0</td><td>34.35M</td><td>34.83M</td><td>35.26M</td><td>35.69M</td><td>36.19M</td><td>36.77M</td><td>37.11M</td></tr>
-              <tr><td>neighbor 0%　Step 1</td><td>3.79M</td><td>3.55M</td><td>3.43M</td><td>3.37M</td><td>3.34M</td><td>3.32M</td><td>3.31M</td></tr>
-              <tr><td>neighbor 0%　Step 2</td><td>3.88M</td><td>3.58M</td><td>3.43M</td><td>3.36M</td><td>3.32M</td><td>3.30M</td><td class="best">3.29M</td></tr>
-              <tr><td>scatter 50%　Step 1</td><td>3.30M</td><td>3.18M</td><td>3.12M</td><td>3.09M</td><td>3.07M</td><td>3.06M</td><td>3.06M</td></tr>
-              <tr><td>scatter 50%　Step 2</td><td class="best">3.34M</td><td class="worse">3.86M</td><td>3.58M</td><td>3.49M</td><td>3.51M</td><td>3.56M</td><td>3.52M</td></tr>
-              <tr><td>scatter 0%　Step 1</td><td>3.78M</td><td>3.54M</td><td>3.42M</td><td>3.36M</td><td>3.33M</td><td>3.32M</td><td>3.31M</td></tr>
-              <tr><td>scatter 0%　Step 2</td><td class="best">3.87M</td><td class="worse">4.90M</td><td>4.31M</td><td>4.09M</td><td>3.98M</td><td>3.98M</td><td>4.15M</td></tr>
+              <tr><td>neighbor 0%　Step 1</td><td>3.79M</td><td>3.55M</td><td>3.43M</td><td>3.37M</td><td>3.34M</td><td>3.32M</td><td class="best">3.31M</td></tr>
+              <tr><td>neighbor 0%　Step 2</td><td>3.88M</td><td>3.58M</td><td>3.43M</td><td>3.36M</td><td>3.32M</td><td>3.30M</td><td>3.29M</td></tr>
+              <tr><td>scatter 50%　Step 1</td><td>3.30M</td><td>3.18M</td><td>3.12M</td><td>3.09M</td><td>3.07M</td><td class="best">3.06M</td><td>3.06M</td></tr>
+              <tr><td>scatter 50%　Step 2</td><td>3.34M</td><td class="worse">3.86M</td><td>3.58M</td><td>3.49M</td><td>3.51M</td><td>3.56M</td><td>3.52M</td></tr>
+              <tr><td>scatter 0%　Step 1</td><td>3.78M</td><td>3.54M</td><td>3.42M</td><td>3.36M</td><td>3.33M</td><td>3.32M</td><td class="best">3.31M</td></tr>
+              <tr><td>scatter 0%　Step 2</td><td>3.87M</td><td class="worse">4.90M</td><td>4.31M</td><td>4.09M</td><td>3.98M</td><td>3.98M</td><td>4.15M</td></tr>
             </tbody>
           </table>
         </div>
-        <p class="note">綠色為 Step 2（目前的程式）在該設定下的最佳 threshold；紅色為 Step 2 相對 Step 1 退步最多的點。「neighbor 50%」表示 remote-pattern 為 neighbor、local free 比例 50%。</p>
+        <p class="note">綠色為 Step 1（目前的程式）在該設定下的最佳 threshold；紅色為 Step 2（已撤回）相對 Step 1 退步最多的點。「neighbor 50%」表示 remote-pattern 為 neighbor、local free 比例 50%。</p>
 
         <figure>
           <img src="report_figures/fig4_threshold_relative.png" alt="Step 1 與 Step 2 各 threshold 相對 threshold 1 的 cycles 變化百分比折線圖" />
-          <figcaption><b>圖 4　各 threshold 相對 threshold 1 的差異。</b>低於 0 代表批次 flush 比較快。Step 1 中四組設定都在 threshold 32–64 最快（−7% 到 −13%）；neighbor 與 scatter 的數字幾乎相同，所以左圖的線兩兩重疊。Step 2 的 neighbor 模式更明顯（−8.6% 到 −15%），scatter 模式則全部高於 0，threshold 2 最差（+16% 與 +27%）。</figcaption>
+          <figcaption><b>圖 4　各 threshold 相對 threshold 1 的差異。</b>低於 0 代表批次 flush 比較快。Step 1 中四組設定都在 threshold 32–64 最快（−7% 到 −13%）；neighbor 與 scatter 的數字幾乎相同，所以左圖的線兩兩重疊。Step 2（已撤回）的 neighbor 模式更明顯（−8.6% 到 −15%），scatter 模式則全部高於 0，threshold 2 最差（+16% 與 +27%）。注意這裡的基準 threshold 1 仍然經過 alien cache，不等於沒有 alien cache，見下表。</figcaption>
         </figure>
+
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th>設定</th><th>直接釋放</th><th>Step 1　thr 1</th><th>Step 1　最佳</th><th>Step 2　最佳</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>neighbor 50%</td><td class="best">2.95M</td><td>3.30M（+11.7%）</td><td>3.06M（+3.8%）</td><td>3.05M（+3.5%）</td></tr>
+              <tr><td>neighbor 0%</td><td class="best">3.06M</td><td>3.79M（+23.7%）</td><td>3.31M（+8.2%）</td><td>3.29M（+7.5%）</td></tr>
+              <tr><td>scatter 50%</td><td class="best">2.95M</td><td>3.30M（+11.8%）</td><td>3.06M（+3.8%）</td><td>3.34M（+13.1%）</td></tr>
+              <tr><td>scatter 0%</td><td class="best">3.06M</td><td>3.78M（+23.8%）</td><td>3.31M（+8.3%）</td><td>3.87M（+26.6%）</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="note">與直接釋放的比較，括號內為相對直接釋放的差異。「直接釋放」是 free 讀出 owner 後直接拿 owner 的鎖釋放，不經 alien cache；數據取自已撤回的 <code class="hash">6fc5e1f</code> 在 threshold 1 時的路徑（<code>hw/results/step3_page_merge/</code> 的 threshold 1 列），alloc 階段與其他版本相同（約 1.33M）。拿鎖次數相同（local 0% 都是 16384 次），但 header 只讀一次（8192 次，Step 1 是 16384 次），也沒有 enqueue 與 flush 的固定成本：local 0% 時 Step 1 threshold 1 的 free 階段每個跨執行緒指標多約 89 cycles。</p>
       </div>
     </section>
 
@@ -450,7 +467,8 @@ python hw/script/plot_results.py</div>
             <li><strong>Step 1 的效益最大</strong>：原本每次 free 都要沿著串列找 page，跨執行緒 free 甚至要掃描全部 128 個 cache，每一步都是 MRAM 讀取加上一串指令。</li>
             <li><strong>Step 1 有一處小退步</strong>：size 16 且 100% 本地 free 時慢約 6%。這時舊的串列掃描第一個 cache 就命中，新做法每次 free 多一次 8-byte header DMA。</li>
             <li><strong>Step 1 之後批次 flush 開始有效</strong>：header 讀取次數與拿鎖次數都不隨 threshold 改變（local 0% 都是 16384 次），所以省下的應是每次 flush 的固定成本（函式呼叫、迴圈初始化等）。threshold 8 以後固定成本已經攤得很薄，曲線趨於平坦。</li>
-            <li><strong>Step 2 對 neighbor 有小幅幫助、對 scatter 有害</strong>：neighbor 時整批只有一個 owner，走跳過排序的快速路徑，拿鎖次數減半；scatter 時要做 counting sort，每個 owner 卻只分到幾個指標，排序成本換不回來。</li>
+            <li><strong>Step 2 對 neighbor 有小幅幫助、對 scatter 有害</strong>：neighbor 時整批只有一個 owner，走跳過排序的快速路徑，拿鎖次數減半；scatter 時要做 counting sort，每個 owner 卻只分到幾個指標，排序成本換不回來。因此已撤回。</li>
+            <li><strong>在這個工作負載下 alien cache 沒有淨效益</strong>：CPU 上的 alien cache 用來避免搶鎖、cache line 在核心間搬移與 NUMA 遠端存取，但 DPU 沒有 cache 與 coherence，沒人搶的硬體 mutex 只要幾個 cycles，neighbor 與 scatter 也不會讓很多 tasklet 同時搶同一把鎖。批次 flush 能分攤的只有 alien cache 自己的成本（多一次 header 讀取、enqueue、flush 呼叫），所以最佳 threshold 也只是接近、追不上直接釋放。</li>
           </ul>
         </div>
         <div class="card">
@@ -459,7 +477,9 @@ python hw/script/plot_results.py</div>
             <li>在實體 UPMEM 硬體上重跑，確認模擬器的 cycle 模型（尤其是 DMA 與 mutex 的成本）與實機一致。</li>
             <li>減少 free 路徑的指令數：DPU 沒有硬體除法器，chunk index 與 <code>assert</code> 裡的 <code>/</code>、<code>%</code> 都是軟體除法；size class 為 2 的冪時可改用位移，計時用的版本可以加 <code>-DNDEBUG</code>。</li>
             <li>增加更接近實際應用的工作負載，例如物件跨輪存活、多種大小混合，以觀察延後回收對 page 用量的影響（size 2048 時 threshold 64 用到 432 個 page，threshold 1 只要 240 個）。</li>
-            <li>如果要讓 threshold 32–64 在各種工作負載下都最佳，可以考慮回到 Step 1 的 flush 方式，或讓 Step 2 只在整批同一個 owner 時才分組，避免 scatter 時的排序成本；每個 tasklet 從不同的 owner 開始拿鎖，也可能減少排隊。</li>
+            <li>在程式中加入正式的直接釋放模式（例如 threshold 0 時不經 alien cache），讓每次量測都有真正的對照組，不必借用已撤回版本的數據。</li>
+            <li>加入搶鎖嚴重的工作負載，例如所有 tasklet 都釋放 tasklet 0 的物件。這時直接釋放會在同一把鎖上大量忙等，是 alien cache 最可能贏的情況；如果這種情況下仍然沒有效益，可以考慮在 DPU 上移除 alien cache。</li>
+            <li>保留 alien cache 的話，flush 時應盡量合併記憶體存取（例如同一個 page 的指標只讀寫一次 bitmap），讓批次分攤到 alien cache 本身以外的成本。</li>
           </ul>
         </div>
       </div>
