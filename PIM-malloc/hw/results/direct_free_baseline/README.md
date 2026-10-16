@@ -1,5 +1,7 @@
 # 直接釋放 baseline（threshold 0）
 
+> **程式碼已撤回。** threshold 0 的程式在 1d59ff8 加入，之後已撤回；目前的程式仍然是 Step 1，threshold 最小為 1。之後的實驗一律以 **threshold 1** 作為 baseline。本資料夾只保留作為紀錄。
+
 ## 實驗目的
 
 threshold 1 仍然會經過 alien cache（enqueue → flush，而且 flush 時會再讀一次 page header），所以不能當作「沒有 alien cache」的對照組。這次加上 threshold 0 作為正式的 baseline：釋放遠端 pointer 時，直接沿用 `freeUMalloc` 已經讀到的 owner，`lockOwner` → `freeThreadCacheNode` → unlock，完全不使用 alien cache。

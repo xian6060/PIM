@@ -20,7 +20,6 @@ struct BenchmarkResult {
   uint64_t ownerLockAcquires;
   uint64_t cacheSearches;
   uint64_t buddyFrees;
-  uint64_t directRemoteFrees;
 
   // allocator state after the final drain
   uint64_t numPages;

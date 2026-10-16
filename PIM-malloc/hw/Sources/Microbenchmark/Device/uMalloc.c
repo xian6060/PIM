@@ -65,8 +65,8 @@ static struct AlienCache *getAlienCache(struct UMalloc *uMalloc, int threadId) {
 }
 
 static int clampAlienFlushThreshold(int alienFlushThreshold) {
-  if (alienFlushThreshold < 0) {
-    return 0;
+  if (alienFlushThreshold < 1) {
+    return 1;
   }
 
   if (alienFlushThreshold > ALIEN_CACHE_SIZE) {
@@ -287,7 +287,6 @@ struct UMalloc *initUMalloc(int mallocableRegionSize, int pageSize,
   }
 
   uMalloc->pageSize = pageSize;
-  uMalloc->alienFlushThreshold = clampAlienFlushThreshold(alienFlushThreshold);
 
   uMalloc->threadCaches0 =
       mem_alloc(sizeClassesLength * sizeof(struct ThreadCache *));
@@ -447,15 +446,6 @@ void freeUMalloc(struct UMalloc *uMalloc, __mram_ptr void *pointer) {
     unlockOwner(threadId);
 
     stats->localFrees++;
-    return;
-  }
-
-  if (uMalloc->alienFlushThreshold == 0) {
-    lockOwner(uMalloc, ownerId);
-    freeInOwnerThreadCache(uMalloc, ownerId, sizeClassIndex, page, pointer);
-    unlockOwner(ownerId);
-
-    stats->directRemoteFrees++;
     return;
   }
 

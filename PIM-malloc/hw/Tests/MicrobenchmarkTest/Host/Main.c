@@ -9,7 +9,7 @@
 #include "MicrobenchmarkTest/BenchmarkResult.h"
 
 #define MAX_THRESHOLDS 32
-#define DEFAULT_THRESHOLDS "0,1,2,4,8,16,32,64"
+#define DEFAULT_THRESHOLDS "1,2,4,8,16,32,64"
 #define DEFAULT_REPETITIONS 3
 #define DEFAULT_RAW_OUTPUT "alien_cache_threshold_raw.csv"
 #define DEFAULT_SUMMARY_OUTPUT "alien_cache_threshold_summary.csv"
@@ -96,7 +96,7 @@ static int parseThresholds(const char *value, int *thresholds) {
       fprintf(stderr, "Too many thresholds (max %d)\n", MAX_THRESHOLDS);
       exit(EXIT_FAILURE);
     }
-    thresholds[count++] = parseInt(token, "threshold", 0, 64);
+    thresholds[count++] = parseInt(token, "threshold", 1, 64);
   }
 
   if (count == 0) {
@@ -119,7 +119,6 @@ static void usage(const char *program) {
           "          [--remote-pattern neighbor|scatter]\n"
           "          [--skip-validation] [--raw-output PATH]\n"
           "          [--summary-output PATH]\n"
-          "Threshold 0 frees remote pointers directly, without the alien cache\n"
           "Defaults: --thresholds %s --repetitions %d --rounds 8 --batch 64\n"
           "          --size 32 --local-percent 50 --remote-pattern neighbor\n",
           program, DEFAULT_THRESHOLDS, DEFAULT_REPETITIONS);
@@ -192,13 +191,13 @@ int main(int argc, char **argv) {
           "threshold,repetition,total_cycles,alloc_cycles,free_cycles,"
           "drain_cycles,local_frees,alien_enqueues,alien_flushes,"
           "flushed_pointers,owner_lock_acquires,cache_searches,buddy_frees,"
-          "pages,direct_remote_frees\n");
+          "pages\n");
   fprintf(summaryFile,
           "threshold,repetitions,median_total_cycles,mean_total_cycles,"
           "stddev_total_cycles,min_total_cycles,max_total_cycles,"
           "mean_alloc_cycles,mean_free_cycles,mean_drain_cycles,"
           "alien_flushes,owner_lock_acquires,cache_searches,pages,"
-          "direct_remote_frees,validation\n");
+          "validation\n");
 
   printf("config: size=%d batch=%d rounds=%d local=%d%% remote=%s "
          "tasklets=16 repetitions=%d\n",
@@ -251,7 +250,7 @@ int main(int argc, char **argv) {
 
       fprintf(rawFile,
               "%d,%d,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,"
-              "%llu,%llu\n",
+              "%llu\n",
               threshold, r + 1, (unsigned long long)last.totalCycles,
               (unsigned long long)last.allocCycles,
               (unsigned long long)last.freeCycles,
@@ -263,8 +262,7 @@ int main(int argc, char **argv) {
               (unsigned long long)last.ownerLockAcquires,
               (unsigned long long)last.cacheSearches,
               (unsigned long long)last.buddyFrees,
-              (unsigned long long)last.numPages,
-              (unsigned long long)last.directRemoteFrees);
+              (unsigned long long)last.numPages);
     }
 
     double mean = sumTotal / repetitions;
@@ -284,7 +282,7 @@ int main(int argc, char **argv) {
 
     fprintf(summaryFile,
             "%d,%d,%.1f,%.1f,%.1f,%llu,%llu,%.1f,%.1f,%.1f,%llu,%llu,%llu,"
-            "%llu,%llu,%s\n",
+            "%llu,%s\n",
             threshold, repetitions, median, mean, stddev,
             (unsigned long long)samples[0],
             (unsigned long long)samples[repetitions - 1],
@@ -292,8 +290,7 @@ int main(int argc, char **argv) {
             sumDrain / repetitions, (unsigned long long)last.alienFlushes,
             (unsigned long long)last.ownerLockAcquires,
             (unsigned long long)last.cacheSearches,
-            (unsigned long long)last.numPages,
-            (unsigned long long)last.directRemoteFrees, validation);
+            (unsigned long long)last.numPages, validation);
 
     printf("%9d %12.0f %12.0f %12.0f %12.0f %8llu %10llu %10llu %6llu %s\n",
            threshold, median, sumAlloc / repetitions, sumFree / repetitions,
