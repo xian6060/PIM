@@ -1,0 +1,10 @@
+config: size=32 batch=64 rounds=8 local=25% remote=hot-owner tasklets=16 repetitions=3
+threshold   median_cyc    alloc_cyc     free_cyc    drain_cyc  flushes   lock_acq   searches  pages validation
+        1     14863920      2343648     12518080         2192     5760      16384      13952    134 pass
+        2     14858560      2343248     12513120         2192     2880      16384      13952    134 pass
+        4     14856304      2343696     12510416         2192     1440      16384      13952    134 pass
+        8     14836880      2343632     12491072         2176      720      16384      13952    134 pass
+       16     14815488      2343664     12469632         2192      360      16384      13952    134 pass
+       32     15008336      2557472     12448672         2192      180      16384      13952    136 pass
+       64     15281840      2953328     12326320         2192       90      16384      13952    139 pass
+CSV written to /home/xian/pim2/PIM/PIM-malloc/hw/results/hot_owner/raw_local25.csv and /home/xian/pim2/PIM/PIM-malloc/hw/results/hot_owner/summary_local25.csv

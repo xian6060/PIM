@@ -116,7 +116,7 @@ static void usage(const char *program) {
   fprintf(stderr,
           "Usage: %s [--thresholds LIST] [--repetitions N] [--rounds N]\n"
           "          [--batch N] [--size BYTES] [--local-percent P]\n"
-          "          [--remote-pattern neighbor|scatter]\n"
+          "          [--remote-pattern neighbor|scatter|hot-owner]\n"
           "          [--skip-validation] [--raw-output PATH]\n"
           "          [--summary-output PATH]\n"
           "Defaults: --thresholds %s --repetitions %d --rounds 8 --batch 64\n"
@@ -164,6 +164,8 @@ int main(int argc, char **argv) {
         config.remotePattern = 0;
       } else if (strcmp(pattern, "scatter") == 0) {
         config.remotePattern = 1;
+      } else if (strcmp(pattern, "hot-owner") == 0) {
+        config.remotePattern = 2;
       } else {
         fprintf(stderr, "Invalid remote-pattern: %s\n", pattern);
         return EXIT_FAILURE;
@@ -199,11 +201,12 @@ int main(int argc, char **argv) {
           "alien_flushes,owner_lock_acquires,cache_searches,pages,"
           "validation\n");
 
+  const char *patternNames[] = {"neighbor", "scatter", "hot-owner"};
   printf("config: size=%d batch=%d rounds=%d local=%d%% remote=%s "
          "tasklets=16 repetitions=%d\n",
          config.allocSize, config.batchSize, config.numRounds,
-         config.localFreePercent,
-         config.remotePattern ? "scatter" : "neighbor", repetitions);
+         config.localFreePercent, patternNames[config.remotePattern],
+         repetitions);
   printf("%9s %12s %12s %12s %12s %8s %10s %10s %6s %s\n", "threshold",
          "median_cyc", "alloc_cyc", "free_cyc", "drain_cyc", "flushes",
          "lock_acq", "searches", "pages", "validation");
