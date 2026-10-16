@@ -32,12 +32,8 @@ __host int validate;
 //   neighbor: pointer i of tasklet t is freed by tasklet t - 1
 //   scatter:  pointer i of tasklet t is freed by tasklet t - 1 - i % 15, so
 //             each tasklet frees pointers owned by all 15 other tasklets
-//   hot-owner: tasklet 0 allocates the remote part of every tasklet's batch
-//             and each tasklet frees its own batch, so every remote free
-//             goes back to tasklet 0 (producer-consumer)
 #define REMOTE_PATTERN_NEIGHBOR 0
 #define REMOTE_PATTERN_SCATTER 1
-#define REMOTE_PATTERN_HOT_OWNER 2
 
 __host struct BenchmarkResult result;
 
@@ -51,16 +47,6 @@ BARRIER_INIT(deviceBarrier, NR_TASKLETS);
 static uint64_t makeTag(int threadId, int round, int index) {
   return ((uint64_t)0xA11C << 48) | ((uint64_t)threadId << 32) |
          ((uint64_t)round << 16) | (uint64_t)index;
-}
-
-static void allocateSlot(int slotThreadId, int round, int index) {
-  __mram_ptr void *pointer = allocateUMalloc(uMalloc, allocSize);
-  sharedPointers[slotThreadId][index] = pointer;
-
-  if (validate) {
-    uint64_t tag __dma_aligned = makeTag(slotThreadId, round, index);
-    mram_write(&tag, pointer, sizeof(tag));
-  }
 }
 
 static void collectResult(uint64_t allocCycles, uint64_t freeCycles,
@@ -110,8 +96,7 @@ int main() {
     assert(0 <= localFreePercent && localFreePercent <= 100);
     assert(allocSize >= 8);
     assert(remotePattern == REMOTE_PATTERN_NEIGHBOR ||
-           remotePattern == REMOTE_PATTERN_SCATTER ||
-           remotePattern == REMOTE_PATTERN_HOT_OWNER);
+           remotePattern == REMOTE_PATTERN_SCATTER);
 
     int sizeClasses[8] = {16, 32, 64, 128, 256, 512, 1024, 2048};
     int sizeClassesLength = 8;
@@ -147,21 +132,13 @@ int main() {
       phaseStart = perfcounter_get();
     }
 
-    if (remotePattern == REMOTE_PATTERN_HOT_OWNER) {
-      for (int i = 0; i < numLocalFrees; i++) {
-        allocateSlot(threadId, round, i);
-      }
+    for (int i = 0; i < batchSize; i++) {
+      __mram_ptr void *pointer = allocateUMalloc(uMalloc, allocSize);
+      sharedPointers[threadId][i] = pointer;
 
-      if (threadId == 0) {
-        for (int t = 0; t < NR_TASKLETS; t++) {
-          for (int i = numLocalFrees; i < batchSize; i++) {
-            allocateSlot(t, round, i);
-          }
-        }
-      }
-    } else {
-      for (int i = 0; i < batchSize; i++) {
-        allocateSlot(threadId, round, i);
+      if (validate) {
+        uint64_t tag __dma_aligned = makeTag(threadId, round, i);
+        mram_write(&tag, pointer, sizeof(tag));
       }
     }
     barrier_wait(&deviceBarrier);
@@ -187,11 +164,7 @@ int main() {
       phaseStart = perfcounter_get();
     }
 
-    if (remotePattern == REMOTE_PATTERN_HOT_OWNER) {
-      for (int i = 0; i < batchSize; i++) {
-        freeUMalloc(uMalloc, sharedPointers[threadId][i]);
-      }
-    } else if (remotePattern == REMOTE_PATTERN_SCATTER) {
+    if (remotePattern == REMOTE_PATTERN_SCATTER) {
       for (int i = 0; i < batchSize; i++) {
         if (i < numLocalFrees) {
           freeUMalloc(uMalloc, sharedPointers[threadId][i]);

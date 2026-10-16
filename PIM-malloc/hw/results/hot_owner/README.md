@@ -1,5 +1,7 @@
 # Hot-owner 模式
 
+> **benchmark 程式已撤回。** hot-owner 模式在 d9c8380 加入，之後已撤回，benchmark 回到原本只有 neighbor 和 scatter 的版本。本資料夾只保留作為紀錄；要重現的話，請先 checkout d9c8380 的 `hw/Tests`。
+
 ## 實驗目的
 
 前面的 neighbor 和 scatter 模式中，每個 owner 只被一兩個 tasklet 釋放，lock 幾乎沒有競爭。hot-owner 測的是相反的極端：所有遠端釋放都回到同一個 owner，也就是 tasklet 0，讓 owner lock 的競爭最大。這代表 alien cache 可能有用的上限。
